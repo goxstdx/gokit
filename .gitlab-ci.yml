@@ -1,0 +1,43 @@
+stages:
+  - lint
+  - pr_agent
+
+default:
+  image: hub-bxcl-registry-vpc.cn-beijing.cr.aliyuncs.com/haochezhu/ci-lint:v0.0.1
+
+lint:
+  stage: lint
+  script:
+    - export REVIEWDOG_GITLAB_API_TOKEN=$GITLAB_PERSONAL_ACCESS_TOKEN
+    - export CI_REPO_OWNER=$CI_PROJECT_NAMESPACE
+    - export CI_REPO_NAME=$CI_PROJECT_NAME
+    - export GITLAB_API=$CI_SERVER_URL
+    - export REVIEWDOG_INSECURE_SKIP_VERIFY=true
+    - export CI_COMMIT=$(git rev-parse HEAD)
+    - reviewdog -reporter=gitlab-mr-discussion
+      -filter-mode=diff_context
+      -fail-on-error=false
+      -tee=true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+
+pr_agent_job:
+  stage: pr_agent
+  image:
+    name: dockerpull.org/codiumai/pr-agent:latest
+    entrypoint: ['/bin/bash', '-s']
+  before_script: []
+  script:
+    - cd /app
+    - export MR_URL="$CI_MERGE_REQUEST_PROJECT_URL/merge_requests/$CI_MERGE_REQUEST_IID"
+    - export gitlab__PERSONAL_ACCESS_TOKEN=$GITLAB_PERSONAL_ACCESS_TOKEN
+    - echo "Running ai code review for $MR_URL"
+    - python -m pr_agent.cli --pr_url="$MR_URL" describe
+    - python -m pr_agent.cli --pr_url="$MR_URL" review
+    - python -m pr_agent.cli --pr_url="$MR_URL" improve
+    - pip install -r $CI_PROJECT_DIR/requirements.txt
+    - python $CI_PROJECT_DIR/update_merge_request.py $GITLAB_PERSONAL_ACCESS_TOKEN $CI_MERGE_REQUEST_PROJECT_ID $CI_MERGE_REQUEST_IID
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+  tags:
+    - ai-code-review

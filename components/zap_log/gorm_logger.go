@@ -10,8 +10,6 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-const Module = "mysql"
-
 // GormLogger is a custom logger_core for Gorm that uses Zap
 type GormLogger struct {
 	Logger *zap.Logger

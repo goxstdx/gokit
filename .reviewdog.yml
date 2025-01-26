@@ -1,0 +1,6 @@
+runner:
+  golangci:
+    cmd: golangci-lint run --max-same-issues=0 --out-format=line-number --verbose --timeout=5m ./...
+    errorformat:
+      - '%f:%l:%c: %m'
+    level: warning

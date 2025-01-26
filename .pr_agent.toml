@@ -1,0 +1,10 @@
+[openai]
+api_type = "azure"
+api_version = "2024-08-01-preview"
+api_base = "https://go-mutual-api.azure-api.net/dev-oai/"
+deployment_id = "gpt-4o"
+[config]
+# models
+model="gpt-4o"
+model_turbo="gpt-4o-mini"
+fallback_models=["gpt-4o", "gpt-4o-mini"]

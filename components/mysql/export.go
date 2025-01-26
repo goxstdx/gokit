@@ -14,7 +14,7 @@ import (
  *  @param ctx context.Context
  *  @param c map[string]MysqlClientConf
  *
- *  @Author: zhouxing@sailone.team
+ *  @Author: xing.zhou@gooddriver.ai
  *  @Date: 2023-07-18 17:49:41
  */
 func InitManyMysqlClient(ctx context.Context, c *Options) (map[string]*gorm.DB, error) {
@@ -46,7 +46,7 @@ func InitManyMysqlClient(ctx context.Context, c *Options) (map[string]*gorm.DB, 
  *  @param ctx context.Context
  *  @param c map[string]MysqlClientConf
  *
- *  @Author: zhouxing@sailone.team
+ *  @Author: xing.zhou@gooddriver.ai
  *  @Date: 2023-07-18 17:49:41
  */
 func InitMysqlClient(ctx context.Context, c *Options) (*gorm.DB, error) {

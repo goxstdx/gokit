@@ -17,7 +17,7 @@ import (
  *  @param c RedisClientConf
  *  @return error
  *
- *  @Author: zhouxing@sailone.team
+ *  @Author: xing.zhou@gooddriver.ai
  *  @Date: 2023-07-18 15:16:32
  */
 func InitRedisClient(ctx context.Context, c *RedisClientConf) (*redis.Client, error) {
@@ -48,7 +48,7 @@ func InitRedisClient(ctx context.Context, c *RedisClientConf) (*redis.Client, er
  *  @return status bool
  *  @return err error
  *
- *  @Author: zhouxing@sailone.team
+ *  @Author: xing.zhou@gooddriver.ai
  *  @Date: 2023-07-18 15:16:58
  */
 func CheckRedisConnectStatus(ctx context.Context, client *redis.Client) (status bool, err error) {

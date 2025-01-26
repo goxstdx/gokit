@@ -1,0 +1,188 @@
+package tools
+
+import (
+	"math/rand"
+	"time"
+
+	"golang.org/x/exp/constraints"
+)
+
+type reducetype func(interface{}) interface{}
+type filtertype func(interface{}) bool
+
+// InSlice checks given string in string slice or not.
+func InSlice[T constraints.Ordered](v T, sl []T) bool {
+	for _, vv := range sl {
+		if vv == v {
+			return true
+		}
+	}
+	return false
+}
+
+// InSliceIface 是否存在
+func InSliceIface(v interface{}, sl []interface{}) bool {
+	for _, vv := range sl {
+		if vv == v {
+			return true
+		}
+	}
+	return false
+}
+
+// SliceRandList generate an int slice from min to max.
+func SliceRandList(min, max int) []int {
+	if max < min {
+		min, max = max, min
+	}
+	length := max - min + 1
+	t0 := time.Now()
+	rand.Seed(int64(t0.Nanosecond()))
+	list := rand.Perm(length)
+	for index := range list {
+		list[index] += min
+	}
+	return list
+}
+
+// SliceMerge 合并
+func SliceMerge(slice1, slice2 []interface{}) (c []interface{}) {
+	c = append(slice1, slice2...)
+	return
+}
+
+// SliceReduce 循环处理
+func SliceReduce(slice []interface{}, a reducetype) (dslice []interface{}) {
+	for _, v := range slice {
+		dslice = append(dslice, a(v))
+	}
+	return
+}
+
+// SliceRand 随机返回一个
+func SliceRand(a []interface{}) (b interface{}) {
+	randnum := rand.Intn(len(a))
+	b = a[randnum]
+	return
+}
+
+// SliceSum 所有值求和
+func SliceSum[T constraints.Integer | constraints.Float](intslice []T) (sum T) {
+	for _, v := range intslice {
+		sum += v
+	}
+	return
+}
+
+// SliceFilter 循环过滤
+func SliceFilter(slice []interface{}, a filtertype) (ftslice []interface{}) {
+	for _, v := range slice {
+		if a(v) {
+			ftslice = append(ftslice, v)
+		}
+	}
+	return
+}
+
+// SliceDiff 差集
+func SliceDiff(slice1, slice2 []interface{}) (diffslice []interface{}) {
+	for _, v := range slice1 {
+		if !InSliceIface(v, slice2) {
+			diffslice = append(diffslice, v)
+		}
+	}
+	return
+}
+
+// SliceIntersect 取交集
+func SliceIntersect(slice1, slice2 []interface{}) (diffslice []interface{}) {
+	for _, v := range slice1 {
+		if InSliceIface(v, slice2) {
+			diffslice = append(diffslice, v)
+		}
+	}
+	return
+}
+
+// SliceChunk 将 slice 按 size 分割
+func SliceChunk(slice []interface{}, size int) (chunkslice [][]interface{}) {
+	if size >= len(slice) {
+		chunkslice = append(chunkslice, slice)
+		return
+	}
+	end := size
+	for i := 0; i <= (len(slice) - size); i += size {
+		chunkslice = append(chunkslice, slice[i:end])
+		end += size
+	}
+	return
+}
+
+// SliceRange start->end 循环步进 step
+// step 负数好像有问题
+func SliceRange(start, end, step int64) (intslice []int64) {
+	for i := start; i <= end; i += step {
+		intslice = append(intslice, i)
+	}
+	return
+}
+
+// SlicePad 将 slice 填充 val 到 size 的长度
+func SlicePad(slice []interface{}, size int, val interface{}) []interface{} {
+	if size <= len(slice) {
+		return slice
+	}
+	for i := 0; i < (size - len(slice)); i++ {
+		slice = append(slice, val)
+	}
+	return slice
+}
+
+// SliceUnique 去掉重复的值
+func SliceUnique(slice []interface{}) (uniqueslice []interface{}) {
+	for _, v := range slice {
+		if !InSliceIface(v, uniqueslice) {
+			uniqueslice = append(uniqueslice, v)
+		}
+	}
+	return
+}
+
+// SliceShuffle 数组值打乱
+func SliceShuffle(slice []interface{}) []interface{} {
+	for i := 0; i < len(slice); i++ {
+		a := rand.Intn(len(slice))
+		b := rand.Intn(len(slice))
+		slice[a], slice[b] = slice[b], slice[a]
+	}
+	return slice
+}
+
+// SliceRepeatVal 获取数组中重复的值
+func SliceRepeatVal(slice []interface{}) (repeatSlice []interface{}) {
+	length := len(slice)
+	for i := 0; i < length; i++ {
+		for j := i + 1; j < length; j++ {
+			if slice[i] == slice[j] {
+				repeatSlice = append(repeatSlice, slice[i])
+			}
+		}
+	}
+	return
+}
+
+func StringSlice2IntSlice[T constraints.Integer](in []string) (out []T) {
+	for _, str := range in {
+		vv, _ := Str2Integer[T](str)
+		out = append(out, T(vv))
+	}
+	return
+}
+
+func IntSlice2StringSlice[T constraints.Integer](in []T) (out []string) {
+	for _, str := range in {
+		vv := Integer2Str(str)
+		out = append(out, vv)
+	}
+	return
+}

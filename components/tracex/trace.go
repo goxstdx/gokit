@@ -38,8 +38,7 @@ func GetTraceIdByContext(ctx context.Context) string {
 }
 
 func MustGetTraceIdByContext(ctx context.Context) string {
-	v, ok := ctx.Value(TraceIdKey).(string)
-	if ok && v != "" {
+	if v := GetTraceIdByContext(ctx); v != "" {
 		return v
 	}
 

@@ -19,7 +19,7 @@
 *.out
 
 # Dependency directories (remove the comment below to include it)
-# vendor/
+vendor/
 
 # Go workspace file
 go.work
@@ -29,9 +29,12 @@ go.work.sum
 .env
 
 # go sum file
-go.sum
+#go.sum
 
 
 # config file
 conf/app.yaml
 conf/local.yaml
+
+# temp
+**/.DS_Store

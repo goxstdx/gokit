@@ -10,7 +10,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"haochezhu.club/go_template_common/tools"
+	"gitlab.ops.haochezhu.club/mutuals/go-mutual-common/tools"
 )
 
 var (
@@ -18,14 +18,12 @@ var (
 	defaultReceiver *TerminateReceiver
 )
 
-type ExeParam struct {
-	Obj    interface{}
-	Method string
-}
-
 // TerminateReceiver 项目发布或者自动伸缩时，k8s会给本程序的应用进程发送SIGTERM信号量，这里就是监控该信号量
 // 用于程序有序推出
 type TerminateReceiver struct {
+	NotifyChan     chan struct{} // 用于通知主程序的
+	MainIsDoneChan chan struct{} // 主程序已经执行完毕，可以退出了，取消监听
+
 	wg sync.WaitGroup
 
 	isStop bool
@@ -42,6 +40,8 @@ type TerminateReceiver struct {
 func GetTerminateReceiver() *TerminateReceiver {
 	once.Do(func() {
 		defaultReceiver = &TerminateReceiver{
+			NotifyChan:     make(chan struct{}),
+			MainIsDoneChan: make(chan struct{}),
 			wg:             sync.WaitGroup{},
 			isStop:         false,
 			logger:         nil,
@@ -68,10 +68,20 @@ func (v *TerminateReceiver) watch() *TerminateReceiver {
 
 	v.log("[TerminateReceiver] [Watch] start watch")
 
-	sin := <-v.listenChan
+	var (
+		sin        os.Signal
+		isMainDone bool
+	)
+	select {
+	case <-v.MainIsDoneChan:
+		isMainDone = true
+		break
+	case sin = <-v.listenChan:
+		break
+	}
 
 	v.isStop = true
-	v.log("[TerminateReceiver] [Watch] sin:%v", sin)
+	v.log("[TerminateReceiver] [Watch] sin:%v, isMainDone:%v", sin, isMainDone)
 
 	defer func() {
 		if x := recover(); x != nil {
@@ -82,7 +92,7 @@ func (v *TerminateReceiver) watch() *TerminateReceiver {
 	// TODO 后面可以根据不同的信号执行不同的 heandler for 括起来
 	// v.signalHandler
 	v.defaultHandler()
-	v.log("[TerminateReceiver] [Watch] program is exiting. sign:%v", sin)
+	v.log("[TerminateReceiver] [Watch] program is exiting. sin:%v, isMainDone:%v", sin, isMainDone)
 
 	return v
 }
@@ -103,7 +113,7 @@ func (v *TerminateReceiver) Wait() {
 
 	v.log("[TerminateReceiver] isStop: %v", v.isStop)
 
-	//os.Exit(0)
+	close(v.NotifyChan)
 }
 
 // Watch 同步监听信号量TERM，会直接阻塞
@@ -111,6 +121,8 @@ func (v *TerminateReceiver) SyncWatch() *TerminateReceiver {
 	v.wg.Add(1)
 
 	v.watch()
+
+	close(v.NotifyChan)
 
 	return v
 }
