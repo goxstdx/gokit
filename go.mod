@@ -1,6 +1,6 @@
 module gitlab.ops.haochezhu.club/mutuals/go-mutual-common
 
-go 1.23.4
+go 1.20
 
 require (
 	github.com/lestrrat/go-file-rotatelogs v0.0.0-20180223000712-d3151e2a480f
