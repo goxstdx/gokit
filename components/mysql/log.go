@@ -3,8 +3,9 @@ package components_mysql
 import (
 	"time"
 
-	"gitlab.ops.haochezhu.club/mutuals/go-mutual-common/components/zap_log"
 	"gorm.io/gorm/logger"
+
+	"gitlab.ops.haochezhu.club/mutual_public/go-mutual-common/components/zap_log"
 )
 
 func newSqlLog() logger.Interface {

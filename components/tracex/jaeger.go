@@ -2,11 +2,12 @@ package tracex
 
 import (
 	"fmt"
+	"io"
+
 	"github.com/opentracing/opentracing-go"
 	"github.com/uber/jaeger-client-go"
 	"github.com/uber/jaeger-client-go/config"
 	"go.uber.org/zap"
-	"io"
 )
 
 func GetDefaultConfig(endpoint string, param float64) *config.Configuration {
@@ -17,9 +18,9 @@ func GetDefaultConfig(endpoint string, param float64) *config.Configuration {
 		},
 		Reporter: &config.ReporterConfig{
 			LogSpans: true,
-			//CollectorEndpoint: "http://127.0.0.1:14268/api/traces",
+			// CollectorEndpoint: "http://127.0.0.1:14268/api/traces",
 			CollectorEndpoint: endpoint,
-			//LocalAgentHostPort: "127.0.0.1:6831",
+			// LocalAgentHostPort: "127.0.0.1:6831",
 		},
 	}
 	return cfg
@@ -32,7 +33,7 @@ func Init(service string, endpoint string, param float64, logger *zap.Logger) {
 func InitJaeger(service string, cfg *config.Configuration, logger *zap.Logger) (opentracing.Tracer, io.Closer) {
 	cfg.ServiceName = service
 	tracer, closer, err := cfg.NewTracer(
-		//config.Logger(jaeger.StdLogger),
+		// config.Logger(jaeger.StdLogger),
 		config.Logger(decoratorJaegerLog(logger)),
 	)
 	if err != nil {

@@ -4,13 +4,12 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"slices"
 	"sync"
 	"syscall"
 
 	"go.uber.org/zap"
 
-	"gitlab.ops.haochezhu.club/mutuals/go-mutual-common/tools"
+	"gitlab.ops.haochezhu.club/mutual_public/go-mutual-common/tools"
 )
 
 var (
@@ -140,12 +139,21 @@ func (v *TerminateReceiver) AddDefaultHandler(run func()) *TerminateReceiver {
 // AddSignal 添加额外的监听信号量
 func (v *TerminateReceiver) AddSignal(signal ...os.Signal) *TerminateReceiver {
 	for _, s := range signal {
-		if !slices.Contains(v.listenSignal, s) {
+		if !v.checkSignal(v.listenSignal, s) {
 			v.listenSignal = append(v.listenSignal, s)
 		}
 	}
 
 	return v
+}
+
+func (*TerminateReceiver) checkSignal(sl []os.Signal, v os.Signal) bool {
+	for _, vv := range sl {
+		if vv == v {
+			return true
+		}
+	}
+	return false
 }
 
 // SetLogger 使用log

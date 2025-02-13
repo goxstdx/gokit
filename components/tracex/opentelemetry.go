@@ -2,13 +2,14 @@ package tracex
 
 import (
 	"context"
+	"os"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.14.0"
-	"os"
 )
 
 func InitTracerProvider(ctx context.Context, url string, serviceName string) error {

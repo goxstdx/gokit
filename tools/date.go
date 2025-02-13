@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"gitlab.ops.haochezhu.club/mutuals/go-mutual-common/enums"
+	"gitlab.ops.haochezhu.club/mutual_public/go-mutual-common/enums"
 )
 
 var (

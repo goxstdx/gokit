@@ -1,4 +1,4 @@
-module gitlab.ops.haochezhu.club/mutuals/go-mutual-common
+module gitlab.ops.haochezhu.club/mutual_public/go-mutual-common
 
 go 1.20
 
