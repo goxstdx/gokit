@@ -66,6 +66,11 @@ func GetUnixMillis() int64 {
 	return time.Now().UnixMilli()
 }
 
+// GetUnixMillis 取当前系统时间的毫秒
+func GetNowTimeObj() time.Time {
+	return time.Now()
+}
+
 func GetTimeObj(timestamp int64) time.Time {
 	if IsMilliTimestamp(timestamp) {
 		return time.UnixMilli(timestamp)
