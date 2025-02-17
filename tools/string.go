@@ -9,6 +9,8 @@ import (
 	"golang.org/x/exp/constraints"
 )
 
+// https://github.com/spf13/cast，一个三方转换包，也可以用这个
+
 func AnyToString(v interface{}) string {
 	return fmt.Sprintf("%v", v)
 }

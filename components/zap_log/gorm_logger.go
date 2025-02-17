@@ -60,15 +60,15 @@ func (l *GormLogger) Trace(ctx context.Context, begin time.Time, fc func() (stri
 	case err != nil && l.LogLevel >= logger.Error:
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			if !l.IgnoreRecordNotFoundError {
-				l.Logger.Sugar().Warnw("SQL error: "+sql, "err", err, "elapsed", elapsed, "sql", sql, "rows", rows)
+				l.Logger.Sugar().Warnw("SQL error: ", "err", err, "elapsed", elapsed, "sql", sql, "rows", rows)
 			}
 		} else {
-			l.Logger.Sugar().Errorw("SQL error: "+sql, "err", err, "elapsed", elapsed, "sql", sql, "rows", rows)
+			l.Logger.Sugar().Errorw("SQL error: ", "err", err, "elapsed", elapsed, "sql", sql, "rows", rows)
 		}
 	case elapsed > l.SlowThreshold && l.SlowThreshold != 0 && l.LogLevel >= logger.Warn:
-		l.Logger.Sugar().Warnw("Slow SQL: "+sql, "elapsed", elapsed, "sql", sql, "rows", rows)
+		l.Logger.Sugar().Warnw("SQL Slow: ", "elapsed", elapsed, "sql", sql, "rows", rows)
 	case l.LogLevel >= logger.Info:
-		l.Logger.Sugar().Infow("Trace: "+sql, "elapsed", elapsed, "sql", sql, "rows", rows)
+		l.Logger.Sugar().Infow("SQL Trace: ", "elapsed", elapsed, "sql", sql, "rows", rows)
 	}
 }
 
