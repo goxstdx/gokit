@@ -25,8 +25,35 @@ func Str2Integer[T constraints.Integer](str string) (T, error) {
 	return T(number), err
 }
 
+func Str2IntegerMust[T constraints.Integer](str string) T {
+	number, err := Str2Int64(str)
+	if err != nil {
+		return 0
+	}
+
+	return T(number)
+}
+
 func Integer2Str[T constraints.Integer](i T) string {
 	return strconv.FormatInt(int64(i), 10)
+}
+
+func Str2Float[T constraints.Float](str string) (T, error) {
+	number, err := strconv.ParseFloat(str, 64)
+	return T(number), err
+}
+
+func Str2FloatMust[T constraints.Float](str string) T {
+	number, err := strconv.ParseFloat(str, 64)
+	if err != nil {
+		return 0
+	}
+
+	return T(number)
+}
+
+func Float2Str[T constraints.Float](f T) string {
+	return strconv.FormatFloat(float64(f), 'f', 2, 64)
 }
 
 // Str2Bytes 将 string 转换为 []byte
