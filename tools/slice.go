@@ -7,23 +7,17 @@ import (
 	"golang.org/x/exp/constraints"
 )
 
-type reducetype func(interface{}) interface{}
-type filtertype func(interface{}) bool
+type reducetype[T any] func(T) T
+type filtertype[T any] func(T) bool
 
 // InSlice checks given string in string slice or not.
-func InSlice[T constraints.Ordered](v T, sl []T) bool {
-	for _, vv := range sl {
-		if vv == v {
-			return true
-		}
+func InSlice[T comparable](value T, slice []T) bool {
+	if len(slice) == 0 {
+		return false // 明确处理空切片的情况
 	}
-	return false
-}
 
-// InSliceIface 是否存在
-func InSliceIface(v interface{}, sl []interface{}) bool {
-	for _, vv := range sl {
-		if vv == v {
+	for _, element := range slice {
+		if element == value {
 			return true
 		}
 	}
@@ -46,13 +40,13 @@ func SliceRandList(min, max int) []int {
 }
 
 // SliceMerge 合并
-func SliceMerge(slice1, slice2 []interface{}) (c []interface{}) {
+func SliceMerge[T any](slice1, slice2 []T) (c []T) {
 	c = append(slice1, slice2...)
 	return
 }
 
 // SliceReduce 循环处理
-func SliceReduce(slice []interface{}, a reducetype) (dslice []interface{}) {
+func SliceReduce[T any](slice []T, a reducetype[T]) (dslice []T) {
 	for _, v := range slice {
 		dslice = append(dslice, a(v))
 	}
@@ -60,7 +54,7 @@ func SliceReduce(slice []interface{}, a reducetype) (dslice []interface{}) {
 }
 
 // SliceRand 随机返回一个
-func SliceRand(a []interface{}) (b interface{}) {
+func SliceRand[T any](a []T) (b T) {
 	randnum := rand.Intn(len(a))
 	b = a[randnum]
 	return
@@ -75,7 +69,7 @@ func SliceSum[T constraints.Integer | constraints.Float](intslice []T) (sum T) {
 }
 
 // SliceFilter 循环过滤
-func SliceFilter(slice []interface{}, a filtertype) (ftslice []interface{}) {
+func SliceFilter[T any](slice []T, a filtertype[T]) (ftslice []T) {
 	for _, v := range slice {
 		if a(v) {
 			ftslice = append(ftslice, v)
@@ -85,9 +79,9 @@ func SliceFilter(slice []interface{}, a filtertype) (ftslice []interface{}) {
 }
 
 // SliceDiff 差集
-func SliceDiff(slice1, slice2 []interface{}) (diffslice []interface{}) {
+func SliceDiff[T comparable](slice1, slice2 []T) (diffslice []T) {
 	for _, v := range slice1 {
-		if !InSliceIface(v, slice2) {
+		if !InSlice(v, slice2) {
 			diffslice = append(diffslice, v)
 		}
 	}
@@ -95,9 +89,9 @@ func SliceDiff(slice1, slice2 []interface{}) (diffslice []interface{}) {
 }
 
 // SliceIntersect 取交集
-func SliceIntersect(slice1, slice2 []interface{}) (diffslice []interface{}) {
+func SliceIntersect[T comparable](slice1, slice2 []T) (diffslice []T) {
 	for _, v := range slice1 {
-		if InSliceIface(v, slice2) {
+		if InSlice(v, slice2) {
 			diffslice = append(diffslice, v)
 		}
 	}
@@ -105,7 +99,7 @@ func SliceIntersect(slice1, slice2 []interface{}) (diffslice []interface{}) {
 }
 
 // SliceChunk 将 slice 按 size 分割
-func SliceChunk(slice []interface{}, size int) (chunkslice [][]interface{}) {
+func SliceChunk[T any](slice []T, size int) (chunkslice [][]T) {
 	if size >= len(slice) {
 		chunkslice = append(chunkslice, slice)
 		return
@@ -128,7 +122,7 @@ func SliceRange(start, end, step int64) (intslice []int64) {
 }
 
 // SlicePad 将 slice 填充 val 到 size 的长度
-func SlicePad(slice []interface{}, size int, val interface{}) []interface{} {
+func SlicePad[T any](slice []T, size int, val T) []T {
 	if size <= len(slice) {
 		return slice
 	}
@@ -139,9 +133,9 @@ func SlicePad(slice []interface{}, size int, val interface{}) []interface{} {
 }
 
 // SliceUnique 去掉重复的值
-func SliceUnique(slice []interface{}) (uniqueslice []interface{}) {
+func SliceUnique[T comparable](slice []T) (uniqueslice []T) {
 	for _, v := range slice {
-		if !InSliceIface(v, uniqueslice) {
+		if !InSlice(v, uniqueslice) {
 			uniqueslice = append(uniqueslice, v)
 		}
 	}
@@ -149,7 +143,7 @@ func SliceUnique(slice []interface{}) (uniqueslice []interface{}) {
 }
 
 // SliceShuffle 数组值打乱
-func SliceShuffle(slice []interface{}) []interface{} {
+func SliceShuffle[T any](slice []T) []T {
 	for i := 0; i < len(slice); i++ {
 		a := rand.Intn(len(slice))
 		b := rand.Intn(len(slice))
@@ -159,7 +153,7 @@ func SliceShuffle(slice []interface{}) []interface{} {
 }
 
 // SliceRepeatVal 获取数组中重复的值
-func SliceRepeatVal(slice []interface{}) (repeatSlice []interface{}) {
+func SliceRepeatVal[T comparable](slice []T) (repeatSlice []T) {
 	length := len(slice)
 	for i := 0; i < length; i++ {
 		for j := i + 1; j < length; j++ {
