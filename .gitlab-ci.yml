@@ -3,7 +3,7 @@ stages:
   - pr_agent
 
 default:
-  image: hub-bxcl-registry-vpc.cn-beijing.cr.aliyuncs.com/haochezhu/ci-lint:v0.0.1
+  image: harbor.ops.gooddriver.io/ci/ci-lint:v0.0.1
 
 lint:
   stage: lint
@@ -24,20 +24,22 @@ lint:
 pr_agent_job:
   stage: pr_agent
   image:
-    name: dockerpull.org/codiumai/pr-agent:latest
+    name: harbor.ops.gooddriver.io/ci/pr-agent:v0.27.4
     entrypoint: ['/bin/bash', '-s']
+  variables:
+    GIT_DEPTH: 0
   before_script: []
   script:
     - cd /app
     - export MR_URL="$CI_MERGE_REQUEST_PROJECT_URL/merge_requests/$CI_MERGE_REQUEST_IID"
     - export gitlab__PERSONAL_ACCESS_TOKEN=$GITLAB_PERSONAL_ACCESS_TOKEN
     - echo "Running ai code review for $MR_URL"
+    - export gitlab__url=$CI_SERVER_PROTOCOL://$CI_SERVER_HOST":"$CI_SERVER_PORT
+    - export config__git_provider="gitlab"
     - python -m pr_agent.cli --pr_url="$MR_URL" describe
     - python -m pr_agent.cli --pr_url="$MR_URL" review
     - python -m pr_agent.cli --pr_url="$MR_URL" improve
     - pip install -r $CI_PROJECT_DIR/requirements.txt
-    - python $CI_PROJECT_DIR/update_merge_request.py $GITLAB_PERSONAL_ACCESS_TOKEN $CI_MERGE_REQUEST_PROJECT_ID $CI_MERGE_REQUEST_IID
+    - python $CI_PROJECT_DIR/update_merge_request.py $CI_SERVER_PROTOCOL://$CI_SERVER_HOST $GITLAB_PERSONAL_ACCESS_TOKEN $CI_MERGE_REQUEST_PROJECT_ID $CI_MERGE_REQUEST_IID
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "push"'
-  tags:
-    - ai-code-review
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'

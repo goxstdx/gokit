@@ -1,10 +1,57 @@
-[openai]
-api_type = "azure"
-api_version = "2024-08-01-preview"
-api_base = "https://go-mutual-api.azure-api.net/dev-oai/"
-deployment_id = "gpt-4o"
+### https://github.com/qodo-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml
+
+### 这里的ollama命名不用管，约定配置
+[ollama]
+### 自建的litellm proxy的地址和端口
+api_base = "http://172.31.50.27:4000"
+### 这里是使用的模型，gemini-2.5-flash-preview-04-17是比较新的，其他的模型也有， 想用什么可以和我沟通
+deployment_id = "gemini-2.5-flash-preview-04-17"
+
 [config]
-# models
-model="gpt-4o"
-model_turbo="gpt-4o-mini"
-fallback_models=["gpt-4o", "gpt-4o-mini"]
+model="litellm_proxy/gemini-2.5-flash-preview-04-17"
+### 兜底模型，可以先默认使用这个，同样可以改
+fallback_models=["litellm_proxy/gpt-4o"]
+### 这里是强制模型回复中文，但是如果模型本身不支持中文，这个字段就无效了
+response_language="zh-CN"
+custom_model_max_tokens=1048576
+### 下面两个参数，是给AI的额外代码，可以多设置一些
+patch_extra_lines_before = 10 # Number of extra lines (+3 default ones) to include before each hunk in the patch
+patch_extra_lines_after = 10 # Number of extra lines (+3 default ones) to include after each hunk in the patch
+### 关于AI的推理力度，具体看AI模型是否支持推理 ，不支持推理则该字段无效
+reasoning_effort = "medium" # "low", "medium", "high"
+
+
+### 约定配置，不用管
+[litellm]
+extra_headers = '{"Authorization": "Bearer sk-2nXo4FZrJZdVik711_7AVA"}'
+
+[ignore]
+### 无视的文件类型
+glob = ['*.json', '*.md']
+
+[pr_description]
+### 允许AI修改MR标题
+generate_ai_title = true
+### pr_description环节额外的prompt
+extra_instructions = """\
+- All answers should be in Chinese.
+- If the pr_title starts with 'GOMUTU-', keep the original title without modification.
+"""
+
+[pr_reviewer]
+### pr_reviewer环节额外的prompt
+extra_instructions = """\
+- All answers should be in Chinese.
+"""
+
+[pr_code_suggestions]
+### 这个是评分阈值，低于8分的就不展示了
+suggestions_score_threshold=8 # [0-10]| recommend not to set this value above 8, since above it may clip highly relevant suggestions
+### pr_code_suggestions环节额外的prompt
+extra_instructions = """\
+- All answers should be in Chinese.
+- always ignore changes of strings.
+"""
+### 增加确认
+demand_code_suggestions_self_review=true # add a checkbox for the author to self-review the code suggestions
+code_suggestions_self_review_text= "**Author self-review**: I have reviewed the PR code suggestions, and addressed the relevant ones."

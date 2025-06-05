@@ -56,13 +56,14 @@ def update_merge_request_title(base_url, private_token, project_id, merge_reques
 if __name__ == "__main__":
     # 设置命令行参数解析
     parser = argparse.ArgumentParser(description='Update GitLab Merge Request Title if comments contain specific keywords.')
+    parser.add_argument('base_url', type=str, help='The base URL of the GitLab instance')
     parser.add_argument('private_token', type=str, help='Your GitLab private token')
     parser.add_argument('project_id', type=str, help='The project ID')
     parser.add_argument('merge_request_id', type=str, help='The merge request ID')
 
     args = parser.parse_args()
 
-    BASE_URL = "http://gitlab.ops.haochezhu.club"
+    BASE_URL = args.base_url
     PRIVATE_TOKEN = args.private_token
     PROJECT_ID = args.project_id
     MERGE_REQUEST_ID = args.merge_request_id
