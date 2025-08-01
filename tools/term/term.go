@@ -9,7 +9,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"gitlab.ops.haochezhu.club/mutual_public/go-mutual-common/tools"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/tools"
 )
 
 var (

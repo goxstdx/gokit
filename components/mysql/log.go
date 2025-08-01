@@ -5,7 +5,7 @@ import (
 
 	"gorm.io/gorm/logger"
 
-	"gitlab.ops.haochezhu.club/mutual_public/go-mutual-common/components/zap_log"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/zap_log"
 )
 
 func newSqlLog() logger.Interface {
