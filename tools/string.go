@@ -53,7 +53,7 @@ func Str2FloatMust[T constraints.Float](str string) T {
 }
 
 func Float2Str[T constraints.Float](f T) string {
-	return strconv.FormatFloat(float64(f), 'f', 2, 64)
+	return strconv.FormatFloat(float64(f), 'f', -1, 64)
 }
 
 // Str2Bytes 将 string 转换为 []byte
