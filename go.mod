@@ -3,6 +3,7 @@ module gitlab.ops.gooddriver.io/mutual_public/go-mutual-common
 go 1.26.0
 
 require (
+	github.com/lestrrat-go/file-rotatelogs v2.4.0+incompatible
 	github.com/lestrrat/go-file-rotatelogs v0.0.0-20180223000712-d3151e2a480f
 	github.com/nacos-group/nacos-sdk-go/v2 v2.3.5
 	github.com/opentracing/opentracing-go v1.2.1-0.20220228012449-10b1cf09e00b
@@ -14,7 +15,6 @@ require (
 	go.opentelemetry.io/otel/sdk v1.43.0
 	go.uber.org/zap v1.27.1
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f
-	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/gorm v1.31.1
 )
@@ -62,6 +62,7 @@ require (
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/jonboulle/clockwork v0.5.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
+	github.com/lestrrat-go/strftime v1.1.1 // indirect
 	github.com/lestrrat/go-envload v0.0.0-20180220120943-6ed08b54a570 // indirect
 	github.com/lestrrat/go-strftime v0.0.0-20180220042222-ba3bf9c1d042 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
@@ -95,4 +96,5 @@ require (
 	google.golang.org/grpc v1.80.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/ini.v1 v1.67.1 // indirect
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 )

@@ -1,12 +1,14 @@
 package logger_factory
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 const (
-	defaultTimeFormat = "2006-01-02 15:04:05.000"
-	defaultMaxSize    = 100
-	defaultMaxAge     = 30
-	defaultMaxBackups = 10
+	defaultTimeFormat   = "2006-01-02 15:04:05.000"
+	defaultMaxAge       = 7
+	defaultRotationTime = "1h"
 )
 
 type ContextExtractor func(ctx context.Context) []Field
@@ -39,11 +41,17 @@ type FileConfig struct {
 }
 
 type RotationConfig struct {
-	MaxSize      int
-	MaxAge       int
-	MaxBackups   int
-	Compress     bool
-	RotationTime string
+	MaxAge       int    // 保留旧日志文件的天数（优先级高于 MaxBackups，两者同时存在时以 MaxAge 为准）
+	MaxBackups   int    // 保留旧日志文件的最大数量
+	RotationTime string // 按时间切割的间隔，如 "1h", "30m", "1d"
+	LinkName     string // 软链名称，为空则不创建软链，如 "latest"
+}
+
+func GetDefaultRotationConfig() *RotationConfig {
+	return &RotationConfig{
+		MaxAge:       defaultMaxAge,
+		RotationTime: defaultRotationTime,
+	}
 }
 
 func (c *Config) applyDefaults() {
@@ -59,15 +67,23 @@ func (c *Config) applyDefaults() {
 	if c.OutputMode == "" {
 		c.OutputMode = OutputModeConsole
 	}
+	if c.File != nil {
+		c.File.Path = strings.TrimRight(c.File.Path, "/")
+		c.File.Name = strings.TrimRight(c.File.Name, ".log")
+	}
+
 	if c.Rotation != nil {
-		if c.Rotation.MaxSize <= 0 {
-			c.Rotation.MaxSize = defaultMaxSize
+		if c.Rotation.MaxAge > 0 && c.Rotation.MaxBackups > 0 {
+			c.Rotation.MaxBackups = 0
 		}
-		if c.Rotation.MaxAge <= 0 {
+		if c.Rotation.MaxAge <= 0 && c.Rotation.MaxBackups <= 0 {
 			c.Rotation.MaxAge = defaultMaxAge
 		}
-		if c.Rotation.MaxBackups <= 0 {
-			c.Rotation.MaxBackups = defaultMaxBackups
+		if c.Rotation.LinkName == "" {
+			c.Rotation.LinkName = c.File.Name + ".latest"
 		}
+		c.Rotation.LinkName = strings.TrimRight(c.Rotation.LinkName, ".log")
+	} else {
+		c.Rotation = GetDefaultRotationConfig()
 	}
 }

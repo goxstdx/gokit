@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"gopkg.in/natefinch/lumberjack.v2"
+	"github.com/lestrrat-go/file-rotatelogs"
 )
 
 func NewLogger(cfg Config) (Logger, error) {
@@ -85,26 +85,26 @@ func buildFileWriter(cfg Config) (io.Writer, error) {
 		return nil, fmt.Errorf("log_factory: file config is nil")
 	}
 
-	filePath := filepath.Join(cfg.File.Path, cfg.File.Name)
+	if err := os.MkdirAll(cfg.File.Path, 0755); err != nil {
+		return nil, fmt.Errorf("log_factory: create directory: %w", err)
+	}
 
 	if cfg.Rotation == nil {
-		if err := os.MkdirAll(cfg.File.Path, 0755); err != nil {
-			return nil, fmt.Errorf("log_factory: create directory: %w", err)
-		}
-		f, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		f, err := os.OpenFile(filepath.Join(cfg.File.Path, cfg.File.Name), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 		if err != nil {
 			return nil, fmt.Errorf("log_factory: open log file: %w", err)
 		}
 		return f, nil
 	}
 
-	lj := &lumberjack.Logger{
-		Filename:   filePath,
-		MaxSize:    cfg.Rotation.MaxSize,
-		MaxAge:     cfg.Rotation.MaxAge,
-		MaxBackups: cfg.Rotation.MaxBackups,
-		Compress:   cfg.Rotation.Compress,
-		LocalTime:  true,
+	pattern := fmt.Sprintf("%s/%s.%s.log", cfg.File.Path, cfg.File.Name, "%Y-%m-%d-%H")
+	opts := []rotatelogs.Option{}
+
+	if cfg.Rotation.MaxAge > 0 {
+		opts = append(opts, rotatelogs.WithMaxAge(time.Duration(cfg.Rotation.MaxAge)*24*time.Hour))
+	}
+	if cfg.Rotation.MaxBackups > 0 {
+		opts = append(opts, rotatelogs.WithRotationCount(uint(cfg.Rotation.MaxBackups)))
 	}
 
 	if cfg.Rotation.RotationTime != "" {
@@ -112,10 +112,20 @@ func buildFileWriter(cfg Config) (io.Writer, error) {
 		if err != nil {
 			return nil, fmt.Errorf("log_factory: invalid rotation_time %q: %w", cfg.Rotation.RotationTime, err)
 		}
-		return &timeRotationWriter{inner: lj, interval: d, filePath: filePath, rotation: cfg.Rotation}, nil
+		opts = append(opts, rotatelogs.WithRotationTime(d))
 	}
 
-	return lj, nil
+	if cfg.Rotation.LinkName != "" {
+		linkName := filepath.Join(cfg.File.Path, cfg.Rotation.LinkName+".log")
+		opts = append(opts, rotatelogs.WithLinkName(linkName))
+	}
+
+	rl, err := rotatelogs.New(pattern, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("log_factory: create rotatelogs: %w", err)
+	}
+
+	return rl, nil
 }
 
 type multiWriter struct {
@@ -129,26 +139,6 @@ func (m *multiWriter) Write(p []byte) (n int, err error) {
 		}
 	}
 	return len(p), nil
-}
-
-type timeRotationWriter struct {
-	inner    *lumberjack.Logger
-	interval time.Duration
-	filePath string
-	rotation *RotationConfig
-	lastTime time.Time
-}
-
-func (w *timeRotationWriter) Write(p []byte) (n int, err error) {
-	now := time.Now()
-	if w.lastTime.IsZero() {
-		w.lastTime = now
-	}
-	if now.Sub(w.lastTime) >= w.interval {
-		_ = w.inner.Rotate()
-		w.lastTime = now
-	}
-	return w.inner.Write(p)
 }
 
 var _ Logger = (*slogLogger)(nil)
