@@ -3,9 +3,10 @@ package components_mysql
 import (
 	"time"
 
-	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 )
 
 const (
@@ -24,7 +25,7 @@ type Options struct {
 
 	ClientConf *MysqlClientConf
 
-	Logger *zap.SugaredLogger
+	Logger logger_factory.Logger
 }
 
 type MysqlClientConf struct {

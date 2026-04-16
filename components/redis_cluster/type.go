@@ -4,7 +4,8 @@ import (
 	"errors"
 
 	"github.com/redis/go-redis/v9"
-	"go.uber.org/zap"
+
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 )
 
 const (
@@ -17,7 +18,7 @@ var RedisClusterClientConfEmptyErr = errors.New("RedisCluster not init")
 type RedisClusterClientConf struct {
 	*redis.ClusterOptions
 
-	Logger *zap.SugaredLogger
+	Logger logger_factory.Logger
 }
 
 var cfg *RedisClusterClientConf

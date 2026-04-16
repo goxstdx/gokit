@@ -7,33 +7,34 @@ import (
 	"strings"
 
 	"github.com/redis/go-redis/v9"
-	"go.uber.org/zap"
+
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 )
 
 type prefixHook struct {
 	prefix string
 
-	_logger *zap.SugaredLogger
+	_logger logger_factory.Logger
 }
 
 func (r prefixHook) DialHook(hook redis.DialHook) redis.DialHook {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		r._logger.Info("dialing %s %s", network, addr)
+		r._logger.Infof("dialing %s %s", network, addr)
 		conn, err := hook(ctx, network, addr)
-		r._logger.Info("finished dialing %s %s", network, addr)
+		r._logger.Infof("finished dialing %s %s", network, addr)
 		return conn, err
 	}
 }
 
 func (r prefixHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
-		r._logger.Info("starting processing: <%s>", cmd)
+		r._logger.Infof("starting processing: <%s>", cmd)
 		err := r.process(ctx, cmd)
-		r._logger.Info("finished processing: <%s>, err: %v", cmd, err)
+		r._logger.Infof("finished processing: <%s>, err: %v", cmd, err)
 
 		if err == nil {
 			err = hook(ctx, cmd)
-			r._logger.Info("exec err: <%v>", err)
+			r._logger.Infof("exec err: <%v>", err)
 		}
 
 		return err
@@ -42,23 +43,23 @@ func (r prefixHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 
 func (r prefixHook) ProcessPipelineHook(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
-		r._logger.Info("pipeline starting processing: %v", cmds)
+		r._logger.Infof("pipeline starting processing: %v", cmds)
 
 		var err error
 		for i := range cmds {
 			err = r.process(ctx, cmds[i])
 			if err != nil {
-				r._logger.Info("process fail, cmds[%d]: <%s>, err: %v", i, cmds[i], err)
+				r._logger.Infof("process fail, cmds[%d]: <%s>, err: %v", i, cmds[i], err)
 
 				break
 			}
 		}
 
-		r._logger.Info("pipeline finished processing: %v, err: %v", cmds, err)
+		r._logger.Infof("pipeline finished processing: %v, err: %v", cmds, err)
 
 		if err == nil {
 			err = hook(ctx, cmds)
-			r._logger.Info("exec err: <%v>", err)
+			r._logger.Infof("exec err: <%v>", err)
 		}
 
 		return err
@@ -100,6 +101,6 @@ func (r *prefixHook) addPrefixToKey(key interface{}) string {
 	}
 }
 
-func NewPrefixHook(prefix string, logger *zap.SugaredLogger) redis.Hook {
+func NewPrefixHook(prefix string, logger logger_factory.Logger) redis.Hook {
 	return prefixHook{prefix: prefix, _logger: logger}
 }

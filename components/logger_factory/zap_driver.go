@@ -1,4 +1,4 @@
-package log_factory
+package logger_factory
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"gorm.io/gorm/logger"
 )
 
 type zapLogger struct {
@@ -145,6 +146,10 @@ func (z *zapLogger) With(fields ...Field) Logger {
 
 func (z *zapLogger) Sync() error {
 	return z.logger.Sync()
+}
+
+func (z *zapLogger) GetGormLogger(config logger.Config) logger.Interface {
+	return newZapGormLogger(z.logger, config)
 }
 
 func (z *zapLogger) ctxFields(ctx context.Context, fields []Field) []zap.Field {

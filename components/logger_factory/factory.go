@@ -1,4 +1,4 @@
-package log_factory
+package logger_factory
 
 import (
 	"fmt"

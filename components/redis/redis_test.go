@@ -7,15 +7,23 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"go.uber.org/zap"
+
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 )
 
 func TestRedis(t *testing.T) {
 	ctx := context.Background()
-	rdb, _ := InitRedisClient(ctx, &RedisClientConf{
-		Options: &redis.Options{Addr: "127.0.0.1:6379"},
-		Logger:  zap.NewExample().Sugar(),
-	})
+	logger, err := logger_factory.NewExample()
+	if err != nil {
+		panic(err)
+	}
+
+	rdb, _ := InitRedisClient(
+		ctx, &RedisClientConf{
+			Options: &redis.Options{Addr: "127.0.0.1:6379"},
+			Logger:  logger,
+		},
+	)
 
 	fmt.Println(rdb.Ping(ctx).Result())
 

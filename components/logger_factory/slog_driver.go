@@ -1,4 +1,4 @@
-package log_factory
+package logger_factory
 
 import (
 	"context"
@@ -8,6 +8,8 @@ import (
 	"os"
 	"runtime"
 	"time"
+
+	grom_logger "gorm.io/gorm/logger"
 )
 
 type slogLogger struct {
@@ -122,6 +124,10 @@ func (s *slogLogger) With(fields ...Field) Logger {
 
 func (s *slogLogger) Sync() error {
 	return nil
+}
+
+func (s *slogLogger) GetGormLogger(config grom_logger.Config) grom_logger.Interface {
+	return grom_logger.NewSlogLogger(s.logger, config)
 }
 
 // log 是核心写入方法，统一处理 caller skip、context 提取

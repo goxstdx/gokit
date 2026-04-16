@@ -1,6 +1,10 @@
-package log_factory
+package logger_factory
 
-import "context"
+import (
+	"context"
+
+	"gorm.io/gorm/logger"
+)
 
 type DriverType string
 
@@ -46,4 +50,6 @@ type Logger interface {
 
 	With(fields ...Field) Logger
 	Sync() error
+
+	GetGormLogger(config logger.Config) logger.Interface
 }

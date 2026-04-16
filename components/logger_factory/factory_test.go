@@ -1,4 +1,4 @@
-package log_factory
+package logger_factory
 
 import (
 	"context"
@@ -6,19 +6,31 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"gorm.io/gorm/logger"
 )
 
 const testLogDir = "/tmp/log_factory_test"
+
+var gormConfig = logger.Config{
+	SlowThreshold:             200 * time.Millisecond,
+	LogLevel:                  logger.Info,
+	IgnoreRecordNotFoundError: true,
+	ParameterizedQueries:      false,
+}
 
 func init() {
 	os.MkdirAll(testLogDir, 0755)
 }
 
 func TestSlogDriver_ConsoleOnly(t *testing.T) {
-	logger, err := NewLogger(Config{
-		DriverType: DriverSlog,
-		OutputMode: OutputModeConsole,
-	})
+	logger, err := NewLogger(
+		Config{
+			DriverType: DriverSlog,
+			OutputMode: OutputModeConsole,
+		},
+	)
 	if err != nil {
 		t.Fatalf("NewLogger(slog) failed: %v", err)
 	}
@@ -33,14 +45,16 @@ func TestSlogDriver_FileOnly(t *testing.T) {
 	tmpDir := testLogDir
 	tmpFile := filepath.Join(tmpDir, "slog-test.log")
 
-	logger, err := NewLogger(Config{
-		DriverType: DriverSlog,
-		OutputMode: OutputModeFile,
-		File: &FileConfig{
-			Path: tmpDir,
-			Name: "slog-test.log",
+	logger, err := NewLogger(
+		Config{
+			DriverType: DriverSlog,
+			OutputMode: OutputModeFile,
+			File: &FileConfig{
+				Path: tmpDir,
+				Name: "slog-test.log",
+			},
 		},
-	})
+	)
 	if err != nil {
 		t.Fatalf("NewLogger(slog) failed: %v", err)
 	}
@@ -59,14 +73,16 @@ func TestSlogDriver_Both(t *testing.T) {
 	tmpDir := testLogDir
 	tmpFile := filepath.Join(tmpDir, "slog-both.log")
 
-	logger, err := NewLogger(Config{
-		DriverType: DriverSlog,
-		OutputMode: OutputModeBoth,
-		File: &FileConfig{
-			Path: tmpDir,
-			Name: "slog-both.log",
+	logger, err := NewLogger(
+		Config{
+			DriverType: DriverSlog,
+			OutputMode: OutputModeBoth,
+			File: &FileConfig{
+				Path: tmpDir,
+				Name: "slog-both.log",
+			},
 		},
-	})
+	)
 	if err != nil {
 		t.Fatalf("NewLogger(slog) failed: %v", err)
 	}
@@ -84,15 +100,17 @@ func TestSlogDriver_Both(t *testing.T) {
 func TestSlogDriver_Development(t *testing.T) {
 	tmpDir := testLogDir
 
-	logger, err := NewLogger(Config{
-		DriverType:  DriverSlog,
-		OutputMode:  OutputModeFile,
-		Development: true,
-		File: &FileConfig{
-			Path: tmpDir,
-			Name: "slog-dev.log",
+	logger, err := NewLogger(
+		Config{
+			DriverType:  DriverSlog,
+			OutputMode:  OutputModeFile,
+			Development: true,
+			File: &FileConfig{
+				Path: tmpDir,
+				Name: "slog-dev.log",
+			},
 		},
-	})
+	)
 	if err != nil {
 		t.Fatalf("NewLogger(slog) failed: %v", err)
 	}
@@ -104,15 +122,17 @@ func TestSlogDriver_Development(t *testing.T) {
 func TestSlogDriver_Levels(t *testing.T) {
 	tmpDir := testLogDir
 
-	logger, _ := NewLogger(Config{
-		DriverType: DriverSlog,
-		OutputMode: OutputModeFile,
-		Level:      LevelDebug,
-		File: &FileConfig{
-			Path: tmpDir,
-			Name: "slog-levels.log",
+	logger, _ := NewLogger(
+		Config{
+			DriverType: DriverSlog,
+			OutputMode: OutputModeFile,
+			Level:      LevelDebug,
+			File: &FileConfig{
+				Path: tmpDir,
+				Name: "slog-levels.log",
+			},
 		},
-	})
+	)
 
 	logger.Debug("debug msg")
 	logger.Info("info msg")
@@ -125,14 +145,16 @@ func TestSlogDriver_Levels(t *testing.T) {
 func TestSlogDriver_FormattedLogs(t *testing.T) {
 	tmpDir := testLogDir
 
-	logger, _ := NewLogger(Config{
-		DriverType: DriverSlog,
-		OutputMode: OutputModeFile,
-		File: &FileConfig{
-			Path: tmpDir,
-			Name: "slog-formatted.log",
+	logger, _ := NewLogger(
+		Config{
+			DriverType: DriverSlog,
+			OutputMode: OutputModeFile,
+			File: &FileConfig{
+				Path: tmpDir,
+				Name: "slog-formatted.log",
+			},
 		},
-	})
+	)
 
 	logger.Infof("user: %s, age: %d", "Alice", 30)
 
@@ -142,14 +164,16 @@ func TestSlogDriver_FormattedLogs(t *testing.T) {
 func TestSlogDriver_WithFields(t *testing.T) {
 	tmpDir := testLogDir
 
-	logger, _ := NewLogger(Config{
-		DriverType: DriverSlog,
-		OutputMode: OutputModeFile,
-		File: &FileConfig{
-			Path: tmpDir,
-			Name: "slog-fields.log",
+	logger, _ := NewLogger(
+		Config{
+			DriverType: DriverSlog,
+			OutputMode: OutputModeFile,
+			File: &FileConfig{
+				Path: tmpDir,
+				Name: "slog-fields.log",
+			},
 		},
-	})
+	)
 
 	logger.Info("request", String("method", "GET"), Int("status", 200))
 
@@ -159,14 +183,16 @@ func TestSlogDriver_WithFields(t *testing.T) {
 func TestSlogDriver_With(t *testing.T) {
 	tmpDir := testLogDir
 
-	logger, _ := NewLogger(Config{
-		DriverType: DriverSlog,
-		OutputMode: OutputModeFile,
-		File: &FileConfig{
-			Path: tmpDir,
-			Name: "slog-with.log",
+	logger, _ := NewLogger(
+		Config{
+			DriverType: DriverSlog,
+			OutputMode: OutputModeFile,
+			File: &FileConfig{
+				Path: tmpDir,
+				Name: "slog-with.log",
+			},
 		},
-	})
+	)
 
 	child := logger.With(String("service", "api"))
 	child.Info("request")
@@ -177,14 +203,16 @@ func TestSlogDriver_With(t *testing.T) {
 func TestSlogDriver_ContextLogs(t *testing.T) {
 	tmpDir := testLogDir
 
-	logger, _ := NewLogger(Config{
-		DriverType: DriverSlog,
-		OutputMode: OutputModeFile,
-		File: &FileConfig{
-			Path: tmpDir,
-			Name: "slog-ctx.log",
+	logger, _ := NewLogger(
+		Config{
+			DriverType: DriverSlog,
+			OutputMode: OutputModeFile,
+			File: &FileConfig{
+				Path: tmpDir,
+				Name: "slog-ctx.log",
+			},
 		},
-	})
+	)
 
 	ctx := context.WithValue(context.Background(), "trace_id", "abc123")
 	logger.InfoCtx(ctx, "request", String("method", "GET"))
@@ -195,24 +223,28 @@ func TestSlogDriver_ContextLogs(t *testing.T) {
 func TestSlogDriver_Sync(t *testing.T) {
 	tmpDir := testLogDir
 
-	logger, _ := NewLogger(Config{
-		DriverType: DriverSlog,
-		OutputMode: OutputModeFile,
-		File: &FileConfig{
-			Path: tmpDir,
-			Name: "slog-sync.log",
+	logger, _ := NewLogger(
+		Config{
+			DriverType: DriverSlog,
+			OutputMode: OutputModeFile,
+			File: &FileConfig{
+				Path: tmpDir,
+				Name: "slog-sync.log",
+			},
 		},
-	})
+	)
 	if err := logger.Sync(); err != nil {
 		t.Errorf("Sync failed: %v", err)
 	}
 }
 
 func TestZapDriver_ConsoleOnly(t *testing.T) {
-	logger, err := NewLogger(Config{
-		DriverType: DriverZap,
-		OutputMode: OutputModeConsole,
-	})
+	logger, err := NewLogger(
+		Config{
+			DriverType: DriverZap,
+			OutputMode: OutputModeConsole,
+		},
+	)
 	if err != nil {
 		t.Fatalf("NewLogger(zap) failed: %v", err)
 	}
@@ -227,14 +259,16 @@ func TestZapDriver_FileOnly(t *testing.T) {
 	tmpDir := testLogDir
 	tmpFile := filepath.Join(tmpDir, "zap-test.log")
 
-	logger, err := NewLogger(Config{
-		DriverType: DriverZap,
-		OutputMode: OutputModeFile,
-		File: &FileConfig{
-			Path: tmpDir,
-			Name: "zap-test.log",
+	logger, err := NewLogger(
+		Config{
+			DriverType: DriverZap,
+			OutputMode: OutputModeFile,
+			File: &FileConfig{
+				Path: tmpDir,
+				Name: "zap-test.log",
+			},
 		},
-	})
+	)
 	if err != nil {
 		t.Fatalf("NewLogger(zap) failed: %v", err)
 	}
@@ -253,14 +287,16 @@ func TestZapDriver_Both(t *testing.T) {
 	tmpDir := testLogDir
 	tmpFile := filepath.Join(tmpDir, "zap-both.log")
 
-	logger, err := NewLogger(Config{
-		DriverType: DriverZap,
-		OutputMode: OutputModeBoth,
-		File: &FileConfig{
-			Path: tmpDir,
-			Name: "zap-both.log",
+	logger, err := NewLogger(
+		Config{
+			DriverType: DriverZap,
+			OutputMode: OutputModeBoth,
+			File: &FileConfig{
+				Path: tmpDir,
+				Name: "zap-both.log",
+			},
 		},
-	})
+	)
 	if err != nil {
 		t.Fatalf("NewLogger(zap) failed: %v", err)
 	}
@@ -278,15 +314,17 @@ func TestZapDriver_Both(t *testing.T) {
 func TestZapDriver_Development(t *testing.T) {
 	tmpDir := testLogDir
 
-	logger, err := NewLogger(Config{
-		DriverType:  DriverZap,
-		OutputMode:  OutputModeFile,
-		Development: true,
-		File: &FileConfig{
-			Path: tmpDir,
-			Name: "zap-dev.log",
+	logger, err := NewLogger(
+		Config{
+			DriverType:  DriverZap,
+			OutputMode:  OutputModeFile,
+			Development: true,
+			File: &FileConfig{
+				Path: tmpDir,
+				Name: "zap-dev.log",
+			},
 		},
-	})
+	)
 	if err != nil {
 		t.Fatalf("NewLogger(zap) failed: %v", err)
 	}
@@ -298,15 +336,17 @@ func TestZapDriver_Development(t *testing.T) {
 func TestZapDriver_Levels(t *testing.T) {
 	tmpDir := testLogDir
 
-	logger, _ := NewLogger(Config{
-		DriverType: DriverZap,
-		OutputMode: OutputModeFile,
-		Level:      LevelDebug,
-		File: &FileConfig{
-			Path: tmpDir,
-			Name: "zap-levels.log",
+	logger, _ := NewLogger(
+		Config{
+			DriverType: DriverZap,
+			OutputMode: OutputModeFile,
+			Level:      LevelDebug,
+			File: &FileConfig{
+				Path: tmpDir,
+				Name: "zap-levels.log",
+			},
 		},
-	})
+	)
 
 	logger.Debug("debug msg")
 	logger.Info("info msg")
@@ -319,14 +359,16 @@ func TestZapDriver_Levels(t *testing.T) {
 func TestZapDriver_FormattedLogs(t *testing.T) {
 	tmpDir := testLogDir
 
-	logger, _ := NewLogger(Config{
-		DriverType: DriverZap,
-		OutputMode: OutputModeFile,
-		File: &FileConfig{
-			Path: tmpDir,
-			Name: "zap-formatted.log",
+	logger, _ := NewLogger(
+		Config{
+			DriverType: DriverZap,
+			OutputMode: OutputModeFile,
+			File: &FileConfig{
+				Path: tmpDir,
+				Name: "zap-formatted.log",
+			},
 		},
-	})
+	)
 
 	logger.Infof("user: %s, age: %d", "Bob", 25)
 
@@ -336,14 +378,16 @@ func TestZapDriver_FormattedLogs(t *testing.T) {
 func TestZapDriver_WithFields(t *testing.T) {
 	tmpDir := testLogDir
 
-	logger, _ := NewLogger(Config{
-		DriverType: DriverZap,
-		OutputMode: OutputModeFile,
-		File: &FileConfig{
-			Path: tmpDir,
-			Name: "zap-fields.log",
+	logger, _ := NewLogger(
+		Config{
+			DriverType: DriverZap,
+			OutputMode: OutputModeFile,
+			File: &FileConfig{
+				Path: tmpDir,
+				Name: "zap-fields.log",
+			},
 		},
-	})
+	)
 
 	logger.Info("response", String("status", "ok"), Int("code", 200))
 
@@ -353,14 +397,16 @@ func TestZapDriver_WithFields(t *testing.T) {
 func TestZapDriver_With(t *testing.T) {
 	tmpDir := testLogDir
 
-	logger, _ := NewLogger(Config{
-		DriverType: DriverZap,
-		OutputMode: OutputModeFile,
-		File: &FileConfig{
-			Path: tmpDir,
-			Name: "zap-with.log",
+	logger, _ := NewLogger(
+		Config{
+			DriverType: DriverZap,
+			OutputMode: OutputModeFile,
+			File: &FileConfig{
+				Path: tmpDir,
+				Name: "zap-with.log",
+			},
 		},
-	})
+	)
 
 	child := logger.With(String("service", "worker"))
 	child.Info("task started")
@@ -371,14 +417,16 @@ func TestZapDriver_With(t *testing.T) {
 func TestZapDriver_ContextLogs(t *testing.T) {
 	tmpDir := testLogDir
 
-	logger, _ := NewLogger(Config{
-		DriverType: DriverZap,
-		OutputMode: OutputModeFile,
-		File: &FileConfig{
-			Path: tmpDir,
-			Name: "zap-ctx.log",
+	logger, _ := NewLogger(
+		Config{
+			DriverType: DriverZap,
+			OutputMode: OutputModeFile,
+			File: &FileConfig{
+				Path: tmpDir,
+				Name: "zap-ctx.log",
+			},
 		},
-	})
+	)
 
 	ctx := context.WithValue(context.Background(), "request_id", "xyz789")
 	logger.InfoCtx(ctx, "processing", String("step", "1"))
@@ -389,14 +437,16 @@ func TestZapDriver_ContextLogs(t *testing.T) {
 func TestZapDriver_Sync(t *testing.T) {
 	tmpDir := testLogDir
 
-	logger, _ := NewLogger(Config{
-		DriverType: DriverZap,
-		OutputMode: OutputModeFile,
-		File: &FileConfig{
-			Path: tmpDir,
-			Name: "zap-sync.log",
+	logger, _ := NewLogger(
+		Config{
+			DriverType: DriverZap,
+			OutputMode: OutputModeFile,
+			File: &FileConfig{
+				Path: tmpDir,
+				Name: "zap-sync.log",
+			},
 		},
-	})
+	)
 	if err := logger.Sync(); err != nil {
 		t.Errorf("Sync failed: %v", err)
 	}
@@ -413,25 +463,29 @@ func TestBothDrivers_Formats(t *testing.T) {
 		{DriverZap, FormatJSON, "zap-json"},
 		{DriverZap, FormatText, "zap-text"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			tmpDir := testLogDir
+		t.Run(
+			tc.name, func(t *testing.T) {
+				tmpDir := testLogDir
 
-			logger, err := NewLogger(Config{
-				DriverType: tc.driverType,
-				Format:     tc.format,
-				OutputMode: OutputModeFile,
-				File: &FileConfig{
-					Path: tmpDir,
-					Name: tc.name + ".log",
-				},
-			})
-			if err != nil {
-				t.Fatalf("NewLogger failed: %v", err)
-			}
-			logger.Info("format test", String("key", "value"))
+				logger, err := NewLogger(
+					Config{
+						DriverType: tc.driverType,
+						Format:     tc.format,
+						OutputMode: OutputModeFile,
+						File: &FileConfig{
+							Path: tmpDir,
+							Name: tc.name + ".log",
+						},
+					},
+				)
+				if err != nil {
+					t.Fatalf("NewLogger failed: %v", err)
+				}
+				logger.Info("format test", String("key", "value"))
 
-			t.Logf("Log file: %s", filepath.Join(tmpDir, tc.name+".log"))
-		})
+				t.Logf("Log file: %s", filepath.Join(tmpDir, tc.name+".log"))
+			},
+		)
 	}
 }
 
@@ -444,33 +498,41 @@ func TestBothDrivers_FieldTypes(t *testing.T) {
 		{"Int", Int("num", 42)},
 		{"Bool", Bool("flag", true)},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			for _, driver := range []DriverType{DriverSlog, DriverZap} {
-				t.Run(string(driver), func(t *testing.T) {
-					tmpDir := testLogDir
-					fileName := string(driver) + "-" + tc.name + ".log"
+		t.Run(
+			tc.name, func(t *testing.T) {
+				for _, driver := range []DriverType{DriverSlog, DriverZap} {
+					t.Run(
+						string(driver), func(t *testing.T) {
+							tmpDir := testLogDir
+							fileName := string(driver) + "-" + tc.name + ".log"
 
-					logger, _ := NewLogger(Config{
-						DriverType: driver,
-						OutputMode: OutputModeFile,
-						File: &FileConfig{
-							Path: tmpDir,
-							Name: fileName,
+							logger, _ := NewLogger(
+								Config{
+									DriverType: driver,
+									OutputMode: OutputModeFile,
+									File: &FileConfig{
+										Path: tmpDir,
+										Name: fileName,
+									},
+								},
+							)
+							logger.Info("test", tc.field)
+
+							t.Logf("Log file: %s", filepath.Join(tmpDir, fileName))
 						},
-					})
-					logger.Info("test", tc.field)
-
-					t.Logf("Log file: %s", filepath.Join(tmpDir, fileName))
-				})
-			}
-		})
+					)
+				}
+			},
+		)
 	}
 }
 
 func TestNewLogger_UnsupportedDriver(t *testing.T) {
-	_, err := NewLogger(Config{
-		DriverType: "unsupported",
-	})
+	_, err := NewLogger(
+		Config{
+			DriverType: "unsupported",
+		},
+	)
 	if err == nil {
 		t.Error("expected error for unsupported driver")
 	}
@@ -497,11 +559,51 @@ func TestConfig_ApplyDefaults(t *testing.T) {
 }
 
 func TestOutputMode_FileConfig(t *testing.T) {
-	_, err := NewLogger(Config{
-		DriverType: DriverSlog,
-		OutputMode: OutputModeFile,
-	})
+	_, err := NewLogger(
+		Config{
+			DriverType: DriverSlog,
+			OutputMode: OutputModeFile,
+		},
+	)
 	if err == nil {
 		t.Error("expected error when OutputMode is file but File is nil")
 	}
+}
+
+func TestGormLogger_Slog(t *testing.T) {
+	logger, err := NewLogger(
+		Config{
+			DriverType: DriverSlog,
+			OutputMode: OutputModeConsole,
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewLogger failed: %v", err)
+	}
+
+	gormLog := logger.GetGormLogger(gormConfig)
+	if gormLog == nil {
+		t.Fatal("NewGormLogger returned nil")
+	}
+
+	gormLog.Info(context.Background(), "gorm info test")
+}
+
+func TestGormLogger_Zap(t *testing.T) {
+	logger, err := NewLogger(
+		Config{
+			DriverType: DriverZap,
+			OutputMode: OutputModeConsole,
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewLogger failed: %v", err)
+	}
+
+	gormLog := logger.GetGormLogger(gormConfig)
+	if gormLog == nil {
+		t.Fatal("NewGormLogger returned nil")
+	}
+
+	gormLog.Info(context.Background(), "gorm zap info test")
 }

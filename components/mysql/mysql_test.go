@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"go.uber.org/zap"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 )
 
 // VehicleAiMatchResult Ai车型库匹配结果
@@ -31,6 +31,11 @@ func (*VehicleAiMatchResult) TableName() string {
 func TestManyMysql(t *testing.T) {
 	ctx := context.Background()
 
+	logger, err := logger_factory.NewExample()
+	if err != nil {
+		panic(err)
+	}
+
 	conf := &Options{
 		ManyClientConf: map[string]MysqlClientConf{
 			"mutual_join": {
@@ -39,7 +44,7 @@ func TestManyMysql(t *testing.T) {
 				// User:     "work",
 				// Password: "work@dev",
 				// DbName:   "microloan",
-				Dsn: "root:Xus8KjxPz8yXEcnI@tcp(192.168.96.247:13306)/mutual_join?charset=utf8mb4&parseTime=true",
+				Dsn: "root:@tcp(127.0.0.1:3306)/mutual_join?charset=utf8mb4&parseTime=true",
 				PoolConf: &MysqlClientPoolConf{
 					MaxIdleConns:    1,
 					MaxOpenConns:    0,
@@ -47,14 +52,14 @@ func TestManyMysql(t *testing.T) {
 				},
 			},
 			"mutual_pay": {
-				Host:     "192.168.96.247",
-				Port:     "13306",
+				Host:     "127.0.0.1",
+				Port:     "3306",
 				User:     "root",
-				Password: "Xus8KjxPz8yXEcnI",
+				Password: "",
 				DbName:   "mutual_pay",
 			},
 		},
-		Logger: zap.NewExample().Sugar(),
+		Logger: logger,
 	}
 	dbMap, _ := InitManyMysqlClient(ctx, conf)
 
@@ -64,7 +69,7 @@ func TestManyMysql(t *testing.T) {
 	}
 
 	m := map[string]interface{}{}
-	err := client.Table("vehicle_ai_match_record").Find(&m).Error
+	err = client.Table("vehicle_ai_match_record").Find(&m).Error
 	fmt.Println("Find err", err)
 
 	fmt.Println(fmt.Sprintf("m: %+v", m))
@@ -84,15 +89,20 @@ func TestManyMysql(t *testing.T) {
 func TestOneMysql(t *testing.T) {
 	ctx := context.Background()
 
+	logger, err := logger_factory.NewExample()
+	if err != nil {
+		panic(err)
+	}
+
 	conf := &Options{
 		ClientConf: &MysqlClientConf{
-			Host:     "192.168.96.247",
-			Port:     "13306",
+			Host:     "127.0.0.1",
+			Port:     "3306",
 			User:     "root",
-			Password: "Xus8KjxPz8yXEcnI",
-			DbName:   "mutual_join",
+			Password: "",
+			DbName:   "haochezhu",
 		},
-		Logger: zap.NewExample().Sugar(),
+		Logger: logger,
 	}
 	client, err := InitMysqlClient(ctx, conf)
 
