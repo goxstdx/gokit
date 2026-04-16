@@ -42,6 +42,12 @@ type Logger interface {
 	Errorf(format string, args ...any)
 	Fatalf(format string, args ...any)
 
+	DebugCtxf(ctx context.Context, format string, args ...any)
+	InfoCtxf(ctx context.Context, format string, args ...any)
+	WarnCtxf(ctx context.Context, format string, args ...any)
+	ErrorCtxf(ctx context.Context, format string, args ...any)
+	FatalCtxf(ctx context.Context, format string, args ...any)
+
 	DebugCtx(ctx context.Context, msg string, fields ...Field)
 	InfoCtx(ctx context.Context, msg string, fields ...Field)
 	WarnCtx(ctx context.Context, msg string, fields ...Field)
@@ -49,6 +55,8 @@ type Logger interface {
 	FatalCtx(ctx context.Context, msg string, fields ...Field)
 
 	With(fields ...Field) Logger
+	WithCtx(ctx context.Context) Logger
+
 	Sync() error
 
 	GetGormLogger(config logger.Config) logger.Interface

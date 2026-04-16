@@ -135,8 +135,37 @@ func (z *zapLogger) FatalCtx(ctx context.Context, msg string, fields ...Field) {
 	z.logger.Fatal(msg, z.ctxFields(ctx, fields)...)
 }
 
+func (z *zapLogger) DebugCtxf(ctx context.Context, format string, args ...any) {
+	z.logger.Debug(fmt.Sprintf(format, args...), z.ctxFields(ctx, nil)...)
+}
+
+func (z *zapLogger) InfoCtxf(ctx context.Context, format string, args ...any) {
+	z.logger.Info(fmt.Sprintf(format, args...), z.ctxFields(ctx, nil)...)
+}
+
+func (z *zapLogger) WarnCtxf(ctx context.Context, format string, args ...any) {
+	z.logger.Warn(fmt.Sprintf(format, args...), z.ctxFields(ctx, nil)...)
+}
+
+func (z *zapLogger) ErrorCtxf(ctx context.Context, format string, args ...any) {
+	z.logger.Error(fmt.Sprintf(format, args...), z.ctxFields(ctx, nil)...)
+}
+
+func (z *zapLogger) FatalCtxf(ctx context.Context, format string, args ...any) {
+	z.logger.Fatal(fmt.Sprintf(format, args...), z.ctxFields(ctx, nil)...)
+}
+
 func (z *zapLogger) With(fields ...Field) Logger {
 	newL := z.logger.With(toZapFields(fields)...)
+	return &zapLogger{
+		logger: newL,
+		sugar:  newL.Sugar(),
+		cfg:    z.cfg,
+	}
+}
+
+func (z *zapLogger) WithCtx(ctx context.Context) Logger {
+	newL := z.logger.With(toZapFields(z.cfg.ContextExtractor(ctx))...)
 	return &zapLogger{
 		logger: newL,
 		sugar:  newL.Sugar(),

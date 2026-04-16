@@ -114,9 +114,38 @@ func (s *slogLogger) FatalCtx(ctx context.Context, msg string, fields ...Field) 
 	os.Exit(1)
 }
 
+func (s *slogLogger) DebugCtxf(ctx context.Context, format string, args ...any) {
+	s.log(ctx, LevelDebug, fmt.Sprintf(format, args...), nil)
+}
+
+func (s *slogLogger) InfoCtxf(ctx context.Context, format string, args ...any) {
+	s.log(ctx, LevelInfo, fmt.Sprintf(format, args...), nil)
+}
+
+func (s *slogLogger) WarnCtxf(ctx context.Context, format string, args ...any) {
+	s.log(ctx, LevelWarn, fmt.Sprintf(format, args...), nil)
+}
+
+func (s *slogLogger) ErrorCtxf(ctx context.Context, format string, args ...any) {
+	s.log(ctx, LevelError, fmt.Sprintf(format, args...), nil)
+}
+
+func (s *slogLogger) FatalCtxf(ctx context.Context, format string, args ...any) {
+	s.log(ctx, LevelError, fmt.Sprintf(format, args...), nil)
+	os.Exit(1)
+}
+
 func (s *slogLogger) With(fields ...Field) Logger {
 	return &slogLogger{
 		logger:    s.logger.With(fieldsToSlogAttrs(fields)...),
+		cfg:       s.cfg,
+		addCaller: s.addCaller,
+	}
+}
+
+func (s *slogLogger) WithCtx(ctx context.Context) Logger {
+	return &slogLogger{
+		logger:    s.logger.With(fieldsToSlogAttrs(s.cfg.ContextExtractor(ctx))...),
 		cfg:       s.cfg,
 		addCaller: s.addCaller,
 	}

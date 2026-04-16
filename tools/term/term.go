@@ -7,8 +7,7 @@ import (
 	"sync"
 	"syscall"
 
-	"go.uber.org/zap"
-
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/tools"
 )
 
@@ -26,7 +25,7 @@ type TerminateReceiver struct {
 	wg sync.WaitGroup
 
 	isStop bool
-	logger *zap.Logger
+	logger logger_factory.Logger
 
 	listenChan   chan os.Signal
 	listenSignal []os.Signal // 监听的端口
@@ -37,18 +36,20 @@ type TerminateReceiver struct {
 
 // GetTerminateReceiver 单例模式
 func GetTerminateReceiver() *TerminateReceiver {
-	once.Do(func() {
-		defaultReceiver = &TerminateReceiver{
-			NotifyChan:     make(chan struct{}),
-			MainIsDoneChan: make(chan struct{}),
-			wg:             sync.WaitGroup{},
-			isStop:         false,
-			logger:         nil,
-			listenChan:     make(chan os.Signal),
-			listenSignal:   []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGKILL},
-			defaultHandler: nil,
-		}
-	})
+	once.Do(
+		func() {
+			defaultReceiver = &TerminateReceiver{
+				NotifyChan:     make(chan struct{}),
+				MainIsDoneChan: make(chan struct{}),
+				wg:             sync.WaitGroup{},
+				isStop:         false,
+				logger:         nil,
+				listenChan:     make(chan os.Signal),
+				listenSignal:   []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGKILL},
+				defaultHandler: nil,
+			}
+		},
+	)
 
 	return defaultReceiver
 }
@@ -157,14 +158,14 @@ func (*TerminateReceiver) checkSignal(sl []os.Signal, v os.Signal) bool {
 }
 
 // SetLogger 使用log
-func (v *TerminateReceiver) SetLogger(logger *zap.Logger) *TerminateReceiver {
+func (v *TerminateReceiver) SetLogger(logger logger_factory.Logger) *TerminateReceiver {
 	v.logger = logger
 	return v
 }
 
 func (v *TerminateReceiver) log(format string, args ...interface{}) {
 	if v.logger != nil {
-		v.logger.Sugar().Infof(format, args...)
+		v.logger.Infof(format, args...)
 	} else {
 		fmt.Printf(format+"\n", args...)
 	}
