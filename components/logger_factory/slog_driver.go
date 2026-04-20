@@ -135,7 +135,23 @@ func (s *slogLogger) FatalCtxf(ctx context.Context, format string, args ...any) 
 	os.Exit(1)
 }
 
-func (s *slogLogger) With(fields ...Field) Logger {
+func (s *slogLogger) With(key string, val any) Logger {
+	return &slogLogger{
+		logger:    s.logger.With(slog.Any(key, val)),
+		cfg:       s.cfg,
+		addCaller: s.addCaller,
+	}
+}
+
+func (s *slogLogger) WithField(fields Field) Logger {
+	return &slogLogger{
+		logger:    s.logger.With(toSlogAttr(fields)),
+		cfg:       s.cfg,
+		addCaller: s.addCaller,
+	}
+}
+
+func (s *slogLogger) WithFields(fields []Field) Logger {
 	return &slogLogger{
 		logger:    s.logger.With(fieldsToSlogAttrs(fields)...),
 		cfg:       s.cfg,
@@ -199,7 +215,32 @@ func toSlogLevel(lvl Level) slog.Level {
 func fieldsToSlogAttrs(fields []Field) []any {
 	attrs := make([]any, 0, len(fields))
 	for _, f := range fields {
-		attrs = append(attrs, slog.Any(f.Key, f.Value))
+		attrs = append(attrs, toSlogAttr(f))
 	}
 	return attrs
+}
+func toSlogAttr(f Field) slog.Attr {
+	switch v := f.Value.(type) {
+	case string:
+		return slog.String(f.Key, v)
+	case int:
+		return slog.Int(f.Key, v)
+	case int64:
+		return slog.Int64(f.Key, v)
+	case float64:
+		return slog.Float64(f.Key, v)
+	case bool:
+		return slog.Bool(f.Key, v)
+	case error:
+		if v == nil {
+			return slog.String(f.Key, "<nil>")
+		}
+		return slog.String(f.Key, fmt.Sprintf("%+v", v))
+	case time.Duration:
+		return slog.Duration(f.Key, v)
+	case fmt.Stringer:
+		return slog.String(f.Key, v.String())
+	default:
+		return slog.Any(f.Key, v)
+	}
 }

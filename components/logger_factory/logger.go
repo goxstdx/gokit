@@ -54,7 +54,9 @@ type Logger interface {
 	ErrorCtx(ctx context.Context, msg string, fields ...Field)
 	FatalCtx(ctx context.Context, msg string, fields ...Field)
 
-	With(fields ...Field) Logger
+	With(key string, val any) Logger
+	WithField(fields Field) Logger
+	WithFields(fields []Field) Logger
 	WithCtx(ctx context.Context) Logger
 
 	Sync() error

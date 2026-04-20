@@ -155,7 +155,25 @@ func (z *zapLogger) FatalCtxf(ctx context.Context, format string, args ...any) {
 	z.logger.Fatal(fmt.Sprintf(format, args...), z.ctxFields(ctx, nil)...)
 }
 
-func (z *zapLogger) With(fields ...Field) Logger {
+func (z *zapLogger) With(key string, val any) Logger {
+	newL := z.logger.With(zap.Any(key, val))
+	return &zapLogger{
+		logger: newL,
+		sugar:  newL.Sugar(),
+		cfg:    z.cfg,
+	}
+}
+
+func (z *zapLogger) WithField(fields Field) Logger {
+	newL := z.logger.With(toZapField(fields))
+	return &zapLogger{
+		logger: newL,
+		sugar:  newL.Sugar(),
+		cfg:    z.cfg,
+	}
+}
+
+func (z *zapLogger) WithFields(fields []Field) Logger {
 	newL := z.logger.With(toZapFields(fields)...)
 	return &zapLogger{
 		logger: newL,

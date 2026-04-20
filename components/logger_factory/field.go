@@ -7,6 +7,8 @@ type Field struct {
 	Value any
 }
 
+type Fields []Field
+
 func String(key, val string) Field {
 	return Field{Key: key, Value: val}
 }
