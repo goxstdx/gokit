@@ -1,10 +1,13 @@
 package tools
 
 import (
+	"cmp"
 	"math/rand"
+	"sort"
 	"time"
 
 	"golang.org/x/exp/constraints"
+	"golang.org/x/exp/slices"
 )
 
 type reducetype[T any] func(T) T
@@ -179,4 +182,29 @@ func IntSlice2StringSlice[T constraints.Integer](in []T) (out []string) {
 		out = append(out, vv)
 	}
 	return
+}
+
+// SortAndUniqueIntegerCopy 对整数或浮点数切片进行排序并去重，返回一个新切片
+func SortAndUniqueIntegerCopy[T constraints.Integer | constraints.Float](nums []T) []T {
+	if len(nums) == 0 {
+		return nil
+	}
+
+	cp := slices.Clone(nums)
+
+	sort.Slice(
+		cp, func(i, j int) bool {
+			return cmp.Less(cp[i], cp[j])
+		},
+	)
+
+	j := 1
+	for i := 1; i < len(cp); i++ {
+		if cp[i] != cp[i-1] {
+			cp[j] = cp[i]
+			j++
+		}
+	}
+
+	return cp[:j]
 }
