@@ -16,7 +16,7 @@ func AnyToString(v interface{}) string {
 }
 
 func Str2Int64(str string) (int64, error) {
-	number, err := strconv.ParseInt(str, 10, 0)
+	number, err := strconv.ParseInt(str, 10, 64)
 	return number, err
 }
 
