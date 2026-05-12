@@ -1,0 +1,36 @@
+package driver
+
+import (
+	"context"
+	"time"
+)
+
+// DelayQueueDriver 延迟队列驱动接口
+type DelayQueueDriver interface {
+	// Add 添加到 pending（ZSet，score=executeAt）
+	Add(ctx context.Context, queue string, data string, executeAt int64) error
+
+	// TransferToProcessing 将到期任务从 pending 原子转移到 processing
+	TransferToProcessing(ctx context.Context, pendingQueue, processingQueue string, maxScore int64, count int64) ([]string, error)
+
+	// Ack 执行成功，从 processing 移除
+	Ack(ctx context.Context, processingQueue string, data string) error
+
+	// Nack 执行失败，从 processing 移回 pending（重新调度）
+	Nack(ctx context.Context, processingQueue, pendingQueue string, data string, executeAt int64) error
+
+	// MoveToDead 从 processing 移入死信队列
+	MoveToDead(ctx context.Context, processingQueue, deadQueue string, data string) error
+
+	// PopFromDead 从死信队列弹出一条消息（用于 envelope 感知恢复）
+	PopFromDead(ctx context.Context, deadQueue string) (string, error)
+
+	// RecoverDead 从死信队列批量恢复到 pending（不重置 envelope）
+	RecoverDead(ctx context.Context, deadQueue, pendingQueue string, count int64) (int64, error)
+
+	// RecoverProcessing 恢复超时的 processing 消息到 pending（进程崩溃恢复）
+	RecoverProcessing(ctx context.Context, processingQueue, pendingQueue string, timeout time.Duration) (int64, error)
+
+	// Len 获取队列长度
+	Len(ctx context.Context, queue string) (int64, error)
+}
