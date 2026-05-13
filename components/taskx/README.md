@@ -55,9 +55,9 @@ taskx:event:{runner_name}:processing   # 执行中
 taskx:event:{runner_name}:dead         # 死信
 ```
 
-- **pending → processing**：消费者取出消息时原子转移（RPOPLPUSH 语义），确保消息不丢
+- **pending → processing**：消费者取出消息时通过 `BLMOVE`（Redis 6.2+）原子转移，确保消息不丢
 - **processing → 删除**：执行成功后 Ack
-- **processing → pending**：执行失败但未超重试上限，重新入队
+- **processing → pending**：执行失败但未超重试上限，通过 Lua 脚本原子完成"删旧值 + 入新值"
 - **processing → dead**：超过 `MaxRetry` 进入死信队列
 - **dead → pending**：通过 `RecoverEventDead` / `RecoverDelayDead` 手动恢复，恢复时自动重置重试计数
 
@@ -67,11 +67,14 @@ taskx:event:{runner_name}:dead         # 死信
 
 ```json
 {
+  "id": "550e8400-e29b-41d4-a716-446655440000",
   "payload": "业务数据",
   "retry_count": 0,
   "created_at": 1715500000
 }
 ```
+
+`id` 为 UUID，保证 DelayQueue ZSet 中每条消息的 member 唯一，避免相同 payload 被去重。
 
 重试时 `retry_count` 递增，达到 `MaxRetry` 后进入死信。死信恢复时 `retry_count` 重置为 0。
 
@@ -87,6 +90,15 @@ taskx:event:{runner_name}:dead         # 死信
 - **分布式锁**：多机启动时只有一台执行恢复
 - 等待结束后 processing 中还残留的消息一定是崩溃遗留的，可以安全恢复
 
+### 4.1 优雅停止
+
+调用 `Manager.Stop()` 时：
+
+1. 取消 context，等待所有消费协程退出
+2. **DelayQueue**：关闭内部 channel 后，在 **1 秒超时** 内将 channel 中残留的已转入 processing 但未执行的消息 Nack 回 pending
+3. 超时后仍未处理完的消息保留在 processing 中，等待下次启动时的崩溃恢复机制兜底
+4. **TimerTask**：等待正在执行的定时任务完成后才返回
+
 ### 5. Valkey / Redis Cluster 兼容
 
 所有 Redis key 使用 `{runner_name}` 作为 HashTag：
@@ -99,9 +111,11 @@ taskx:event:{order-notify}:dead
 
 花括号内的部分用于计算 slot，同一 Runner 的所有 key 落在同一 slot，Lua 脚本操作多 key 时不会跨 slot。
 
+> **最低版本要求**：Redis >= 6.2 / Valkey >= 7.0（需要 `BLMOVE` 命令支持）。启动时会自动检测版本，不满足时返回错误。
+
 ### 6. 多消费者
 
-- **EventQueue**：配置 `ConsumerCount=N`，启动 N 个协程并发 `BRPOP` 同一个 List，Redis 保证每条消息只被一个消费者取到
+- **EventQueue**：配置 `ConsumerCount=N`，启动 N 个协程并发 `BLMOVE` 同一个 List，Redis 保证每条消息只被一个消费者取到
 - **DelayQueue**：1 个轮询协程取出到期消息，投入 channel，N 个 worker 协程并发执行
 
 ### 7. 分布式锁
@@ -117,7 +131,7 @@ taskx:event:{order-notify}:dead
 ```
 Producer                           Redis                              Consumer
    │                                 │                                    │
-   │─── PublishEvent ──► LPUSH ────► pending ◄─── BRPOP+LPUSH ───────────│
+   │─── PublishEvent ──► LPUSH ────► pending ◄─── BLMOVE ────────────────│
    │                                 │              │                     │
    │                                 │              ▼                     │
    │                                 │          processing ──── Run() ───│
@@ -249,13 +263,13 @@ func main() {
     // 注册 EventQueue Runner（3 个消费者，最大重试 5 次）
     _ = registry.RegisterEventRunner(
         &OrderNotifyRunner{},
-        core.RunnerOption{MaxRetry: 5, ConsumerCount: 3},
+        core.RunnerOption{MaxRetry: core.IntPtr(5), ConsumerCount: 3},
     )
 
     // 注册 DelayQueue Runner
     _ = registry.RegisterDelayRunner(
         &OrderNotifyRunner{},
-        core.RunnerOption{MaxRetry: 3, ConsumerCount: 2},
+        core.RunnerOption{MaxRetry: core.IntPtr(3), ConsumerCount: 2},
     )
 
     // 注册 TimerTask
@@ -330,11 +344,12 @@ mgr := taskx.NewManager(registry,
 
 | Option | 默认值 | 说明 |
 |--------|--------|------|
-| `WithKeyPrefix(s)` | `"taskx"` | Redis key 前缀 |
+| `WithKeyPrefix(s)` | `"taskx"` | Redis key 前缀（会作为 HashTag 的一部分） |
 | `WithLogger(l)` | 无（必填） | `logger_factory.Logger` 实例 |
 | `WithPollInterval(d)` | `1s` | DelayQueue 轮询间隔 |
 | `WithLockTTL(d)` | `30s` | 分布式锁默认 TTL |
 | `WithProcessingTimeout(d)` | `5m` | processing 队列超时时间，用于崩溃恢复等待 |
+| `WithRecoverBatchSize(n)` | `1000` | 崩溃恢复每批次移动的消息数量 |
 
 ## Redis Key 命名规范
 

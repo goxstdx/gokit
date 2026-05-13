@@ -43,7 +43,7 @@ func NewRegistry() *Registry {
 
 // RegisterEventRunner 注册事件队列 Runner
 func (r *Registry) RegisterEventRunner(runner core.QueueRunner, opts ...core.RunnerOption) error {
-	opt := core.RunnerOption{MaxRetry: 3, ConsumerCount: 1}
+	opt := core.RunnerOption{MaxRetry: core.IntPtr(3), ConsumerCount: 1}
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
@@ -62,7 +62,7 @@ func (r *Registry) RegisterEventRunner(runner core.QueueRunner, opts ...core.Run
 
 // RegisterDelayRunner 注册延迟队列 Runner
 func (r *Registry) RegisterDelayRunner(runner core.QueueRunner, opts ...core.RunnerOption) error {
-	opt := core.RunnerOption{MaxRetry: 3, ConsumerCount: 1}
+	opt := core.RunnerOption{MaxRetry: core.IntPtr(3), ConsumerCount: 1}
 	if len(opts) > 0 {
 		opt = opts[0]
 	}

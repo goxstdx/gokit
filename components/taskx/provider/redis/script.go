@@ -6,18 +6,6 @@ import "github.com/redis/go-redis/v9"
 // key 命名规范：taskx:<type>:{runner_name}:<suffix>
 // 花括号 {runner_name} 作为 HashTag，确保同一 runner 的所有 key 落在同一 slot。
 
-// scriptPopToProcessing 从 pending List 尾部弹出一个元素，原子推入 processing List 头部。
-// KEYS[1]=pending, KEYS[2]=processing
-// 等价于 LMOVE pending processing RIGHT LEFT，封装为 Lua 保证原子性兼容旧版本。
-var scriptPopToProcessing = redis.NewScript(`
-local val = redis.call('RPOP', KEYS[1])
-if val == false then
-    return false
-end
-redis.call('LPUSH', KEYS[2], val)
-return val
-`)
-
 // scriptNack 从 processing 移除并推回 pending。
 // KEYS[1]=processing, KEYS[2]=pending, ARGV[1]=data
 var scriptNack = redis.NewScript(`
@@ -112,6 +100,37 @@ for _, v in ipairs(items) do
     moved = moved + 1
 end
 return moved
+`)
+
+// scriptEventRetryRequeue 重试时原子从 processing List 删旧值、向 pending List 推新值。
+// KEYS[1]=processing, KEYS[2]=pending, ARGV[1]=oldData, ARGV[2]=newData
+var scriptEventRetryRequeue = redis.NewScript(`
+local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
+if removed > 0 then
+    redis.call('LPUSH', KEYS[2], ARGV[2])
+end
+return removed
+`)
+
+// scriptDelayRetryRequeue 重试时原子从 processing ZSet 删旧值、向 pending ZSet 加新值。
+// KEYS[1]=processing, KEYS[2]=pending, ARGV[1]=oldData, ARGV[2]=newData, ARGV[3]=newScore
+var scriptDelayRetryRequeue = redis.NewScript(`
+local removed = redis.call('ZREM', KEYS[1], ARGV[1])
+if removed > 0 then
+    redis.call('ZADD', KEYS[2], tonumber(ARGV[3]), ARGV[2])
+end
+return removed
+`)
+
+// scriptDelayPopFromDead 原子弹出 dead ZSet 中 score 最小的元素。
+// KEYS[1]=dead
+var scriptDelayPopFromDead = redis.NewScript(`
+local items = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', '+inf', 'LIMIT', 0, 1)
+if #items == 0 then
+    return false
+end
+redis.call('ZREM', KEYS[1], items[1])
+return items[1]
 `)
 
 // scriptUnlock 安全释放锁（仅释放自己持有的锁）。

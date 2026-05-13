@@ -99,6 +99,16 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("taskx: logger is required, use WithLogger() to set")
 	}
 
+	// 检测驱动版本兼容性（如 BLMOVE 要求 Redis >= 6.2）
+	type versionChecker interface {
+		CheckVersion(ctx context.Context) error
+	}
+	if v, ok := m.cfg.EventDriver.(versionChecker); ok {
+		if err := v.CheckVersion(ctx); err != nil {
+			return err
+		}
+	}
+
 	// 启动 EventQueue 消费者
 	if m.cfg.EventDriver != nil && m.eventFactory != nil {
 		for _, entry := range m.registry.GetEventRunners() {
@@ -151,7 +161,8 @@ func (m *Manager) Stop(ctx context.Context) error {
 	}
 
 	if m.scheduler != nil {
-		m.scheduler.Stop()
+		stopCtx := m.scheduler.Stop()
+		<-stopCtx.Done()
 		m.scheduler = nil
 	}
 

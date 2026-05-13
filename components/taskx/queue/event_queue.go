@@ -121,14 +121,21 @@ func (c *EventConsumer) startupRecover(ctx context.Context) {
 	case <-time.After(c.procTimeout):
 	}
 
-	// 等待结束后，processing 中残留的消息一定是崩溃遗留的
-	recovered, err := c.driver.RecoverProcessing(ctx, c.processingKey(), c.pendingKey(), c.procTimeout)
-	if err != nil {
-		c.logger.Warnf("taskx: event[%s] recover processing error: %v", c.runner.GetName(), err)
-		return
+	// 等待结束后，processing 中残留的消息一定是崩溃遗留的，分批恢复直到清空
+	var totalRecovered int64
+	for {
+		recovered, err := c.driver.RecoverProcessing(ctx, c.processingKey(), c.pendingKey(), c.procTimeout)
+		if err != nil {
+			c.logger.Warnf("taskx: event[%s] recover processing error: %v", c.runner.GetName(), err)
+			break
+		}
+		totalRecovered += recovered
+		if recovered == 0 {
+			break
+		}
 	}
-	if recovered > 0 {
-		c.logger.Infof("taskx: event[%s] recovered %d orphaned messages from processing", c.runner.GetName(), recovered)
+	if totalRecovered > 0 {
+		c.logger.Infof("taskx: event[%s] recovered %d orphaned messages from processing", c.runner.GetName(), totalRecovered)
 	}
 }
 
@@ -163,27 +170,34 @@ func (c *EventConsumer) process(ctx context.Context, raw string, id int) {
 	env, err := core.DecodeEnvelope(raw)
 	if err != nil {
 		c.logger.Errorf("taskx: event[%s][%d] decode error: %v, raw: %s", c.runner.GetName(), id, err, raw)
-		_ = c.driver.Ack(ctx, c.processingKey(), raw)
+		if ackErr := c.driver.Ack(ctx, c.processingKey(), raw); ackErr != nil {
+			c.logger.Errorf("taskx: event[%s][%d] ack(decode-err) failed: %v", c.runner.GetName(), id, ackErr)
+		}
 		return
 	}
 
 	result := c.runner.Run(ctx, env.Payload)
 
 	if result.IsOk {
-		_ = c.driver.Ack(ctx, c.processingKey(), raw)
+		if ackErr := c.driver.Ack(ctx, c.processingKey(), raw); ackErr != nil {
+			c.logger.Errorf("taskx: event[%s][%d] ack failed: %v", c.runner.GetName(), id, ackErr)
+		}
 		return
 	}
 
 	c.logger.Warnf("taskx: event[%s][%d] run failed: %v", c.runner.GetName(), id, result.Err)
 	env.RetryCount++
 
-	if env.RetryCount >= c.option.MaxRetry {
-		c.logger.Warnf("taskx: event[%s][%d] max retry reached (%d), moving to dead letter", c.runner.GetName(), id, c.option.MaxRetry)
-		_ = c.driver.MoveToDead(ctx, c.processingKey(), c.deadKey(), raw)
+	if env.RetryCount >= *c.option.MaxRetry {
+		c.logger.Warnf("taskx: event[%s][%d] max retry reached (%d), moving to dead letter", c.runner.GetName(), id, *c.option.MaxRetry)
+		if err := c.driver.MoveToDead(ctx, c.processingKey(), c.deadKey(), raw); err != nil {
+			c.logger.Errorf("taskx: event[%s][%d] move-to-dead failed: %v", c.runner.GetName(), id, err)
+		}
 		return
 	}
 
 	newRaw := env.Encode()
-	_ = c.driver.Ack(ctx, c.processingKey(), raw)
-	_ = c.driver.Push(ctx, c.pendingKey(), newRaw)
+	if err := c.driver.RetryRequeue(ctx, c.processingKey(), c.pendingKey(), raw, newRaw); err != nil {
+		c.logger.Errorf("taskx: event[%s][%d] retry-requeue failed: %v", c.runner.GetName(), id, err)
+	}
 }

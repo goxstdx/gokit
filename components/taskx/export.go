@@ -2,6 +2,7 @@ package taskx
 
 import (
 	"context"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -26,6 +27,9 @@ func NewRedisManager(rdb redis.Cmdable, registry *Registry, opts ...Option) *Man
 	allOpts = append(allOpts, opts...)
 
 	mgr := NewManager(registry, allOpts...)
+
+	// 将配置中的 RecoverBatchSize 传递给 Redis provider
+	ep.SetRecoverBatchSize(mgr.cfg.RecoverBatchSize)
 
 	mgr.SetEventConsumerFactory(newEventConsumerFactory)
 	mgr.SetDelayConsumerFactory(newDelayConsumerFactory)
@@ -123,14 +127,14 @@ func recoverDelayDeadWithReset(ctx context.Context, drv driver.DelayQueueDriver,
 		}
 		env, err := core.DecodeEnvelope(raw)
 		if err != nil {
-			if addErr := drv.Add(ctx, pendingKey, raw, 0); addErr != nil {
+			if addErr := drv.Add(ctx, pendingKey, raw, time.Now().Unix()); addErr != nil {
 				return recovered, addErr
 			}
 			recovered++
 			continue
 		}
 		env.RetryCount = 0
-		if err := drv.Add(ctx, pendingKey, env.Encode(), 0); err != nil {
+		if err := drv.Add(ctx, pendingKey, env.Encode(), time.Now().Unix()); err != nil {
 			return recovered, err
 		}
 		recovered++

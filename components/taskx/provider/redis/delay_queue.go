@@ -56,6 +56,14 @@ func (p *DelayQueueProvider) Ack(ctx context.Context, processingQueue string, da
 	return p.rdb.ZRem(ctx, processingQueue, data).Err()
 }
 
+func (p *DelayQueueProvider) RetryRequeue(ctx context.Context, processingQueue, pendingQueue string, oldData, newData string, executeAt int64) error {
+	_, err := scriptDelayRetryRequeue.Run(ctx, p.rdb, []string{processingQueue, pendingQueue}, oldData, newData, executeAt).Result()
+	if err != nil && err != redis.Nil {
+		return err
+	}
+	return nil
+}
+
 func (p *DelayQueueProvider) Nack(ctx context.Context, processingQueue, pendingQueue string, data string, executeAt int64) error {
 	_, err := scriptDelayNack.Run(ctx, p.rdb,
 		[]string{processingQueue, pendingQueue},
@@ -92,27 +100,20 @@ func (p *DelayQueueProvider) RecoverDead(ctx context.Context, deadQueue, pending
 }
 
 func (p *DelayQueueProvider) PopFromDead(ctx context.Context, deadQueue string) (string, error) {
-	// ZSet 死信队列，弹出 score 最小的（最早进入的）
-	results, err := p.rdb.ZRangeByScore(ctx, deadQueue, &redis.ZRangeBy{
-		Min:    "-inf",
-		Max:    "+inf",
-		Offset: 0,
-		Count:  1,
-	}).Result()
+	result, err := scriptDelayPopFromDead.Run(ctx, p.rdb, []string{deadQueue}).Result()
 	if err != nil {
+		if err == redis.Nil {
+			return "", nil
+		}
 		return "", err
 	}
-	if len(results) == 0 {
+	if result == nil {
 		return "", nil
 	}
-	removed, err := p.rdb.ZRem(ctx, deadQueue, results[0]).Result()
-	if err != nil {
-		return "", err
+	if s, ok := result.(string); ok {
+		return s, nil
 	}
-	if removed == 0 {
-		return "", nil
-	}
-	return results[0], nil
+	return "", nil
 }
 
 func (p *DelayQueueProvider) RecoverProcessing(ctx context.Context, processingQueue, pendingQueue string, timeout time.Duration) (int64, error) {

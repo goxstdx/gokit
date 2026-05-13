@@ -70,7 +70,7 @@ func (s *Scheduler) runTask(name string, task core.TimerTaskRunner, opt core.Tim
 		_ = s.lock.Unlock(ctx, lockKey)
 	}()
 
-	maxAttempts := 1 + opt.MaxRetry
+	maxAttempts := 1 + *opt.MaxRetry
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		result := task.Run(ctx)
 		if result.IsOk {

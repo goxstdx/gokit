@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 )
 
@@ -37,24 +39,26 @@ type TimerTaskRunner interface {
 
 // RunnerOption 队列 Runner 注册选项
 type RunnerOption struct {
-	MaxRetry      int // 最大重试次数，超过后进入死信队列。0=不重试，默认 3
-	ConsumerCount int // 并发消费者数量，默认 1
+	MaxRetry      *int // 最大重试次数，超过后进入死信队列。nil=默认 3，IntPtr(0)=不重试
+	ConsumerCount int  // 并发消费者数量，默认 1
 }
 
 // TimerTaskOption 定时任务注册选项
 type TimerTaskOption struct {
-	MaxRetry int // 执行失败重试次数，默认 0（不重试）
+	MaxRetry *int // 执行失败重试次数，nil=默认 0（不重试）
 }
+
+// IntPtr 返回 int 值的指针，用于设置 MaxRetry 等可选字段
+func IntPtr(v int) *int { return &v }
 
 // Logger 使用项目内 logger_factory.Logger
 type Logger = logger_factory.Logger
 
 func (o RunnerOption) Normalize() RunnerOption {
-	if o.MaxRetry < 0 {
-		o.MaxRetry = 0
-	}
-	if o.MaxRetry == 0 {
-		o.MaxRetry = 3
+	if o.MaxRetry == nil {
+		o.MaxRetry = IntPtr(3)
+	} else if *o.MaxRetry < 0 {
+		o.MaxRetry = IntPtr(0)
 	}
 	if o.ConsumerCount <= 0 {
 		o.ConsumerCount = 1
@@ -63,14 +67,18 @@ func (o RunnerOption) Normalize() RunnerOption {
 }
 
 func (o TimerTaskOption) Normalize() TimerTaskOption {
-	if o.MaxRetry < 0 {
-		o.MaxRetry = 0
+	if o.MaxRetry == nil {
+		o.MaxRetry = IntPtr(0)
+	} else if *o.MaxRetry < 0 {
+		o.MaxRetry = IntPtr(0)
 	}
 	return o
 }
 
-// Envelope 消息信封，包装 payload 并附带元数据（重试次数等）
+// Envelope 消息信封，包装 payload 并附带元数据（重试次数等）。
+// ID 保证每条消息的唯一性，避免 DelayQueue ZSet member 去重导致消息丢失。
 type Envelope struct {
+	ID         string `json:"id"`
 	Payload    string `json:"payload"`
 	RetryCount int    `json:"retry_count"`
 	CreatedAt  int64  `json:"created_at"`
@@ -78,6 +86,7 @@ type Envelope struct {
 
 func NewEnvelope(payload string) *Envelope {
 	return &Envelope{
+		ID:         uuid.NewString(),
 		Payload:    payload,
 		RetryCount: 0,
 		CreatedAt:  time.Now().Unix(),

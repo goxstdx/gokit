@@ -25,6 +25,9 @@ type DelayQueueDriver interface {
 	// PopFromDead 从死信队列弹出一条消息（用于 envelope 感知恢复）
 	PopFromDead(ctx context.Context, deadQueue string) (string, error)
 
+	// RetryRequeue 重试时原子地从 processing 删除旧消息并将新消息加入 pending
+	RetryRequeue(ctx context.Context, processingQueue, pendingQueue string, oldData, newData string, executeAt int64) error
+
 	// RecoverDead 从死信队列批量恢复到 pending（不重置 envelope）
 	RecoverDead(ctx context.Context, deadQueue, pendingQueue string, count int64) (int64, error)
 

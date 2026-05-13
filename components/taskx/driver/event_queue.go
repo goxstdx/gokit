@@ -28,6 +28,9 @@ type EventQueueDriver interface {
 	// RecoverDead 从死信队列批量恢复到 pending（不重置 envelope）
 	RecoverDead(ctx context.Context, deadQueue, pendingQueue string, count int64) (int64, error)
 
+	// RetryRequeue 重试时原子地从 processing 删除旧消息并将新消息推入 pending
+	RetryRequeue(ctx context.Context, processingQueue, pendingQueue string, oldData, newData string) error
+
 	// RecoverProcessing 恢复超时的 processing 消息到 pending（进程崩溃恢复）
 	RecoverProcessing(ctx context.Context, processingQueue, pendingQueue string, timeout time.Duration) (int64, error)
 

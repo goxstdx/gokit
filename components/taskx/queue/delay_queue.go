@@ -93,14 +93,37 @@ func (c *DelayConsumer) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop 停止延迟队列消费器
+// Stop 停止延迟队列消费器。
+// 停止流程：cancel context → 等待所有协程退出 → drain channel 将残留消息 Nack 回 pending。
+// drain 操作有 1 秒超时限制，超时后残留消息保留在 processing 中，等待下次启动时的崩溃恢复机制处理。
 func (c *DelayConsumer) Stop() {
 	if c.cancel != nil {
 		c.cancel()
 	}
 	c.wg.Wait()
+
 	if c.taskCh != nil {
 		close(c.taskCh)
+		// 1 秒内尽量将 channel 中残留的消息 Nack 回 pending，
+		// 超时后剩余消息留在 processing ZSet，由下次启动的崩溃恢复流程兜底。
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), time.Second)
+		defer drainCancel()
+		var drained int
+		for raw := range c.taskCh {
+			if drainCtx.Err() != nil {
+				c.logger.Warnf("taskx: delay[%s] drain timeout, remaining items stay in processing for crash recovery", c.runner.GetName())
+				break
+			}
+			if err := c.driver.Nack(drainCtx, c.processingKey(), c.pendingKey(), raw, time.Now().Unix()); err != nil {
+				c.logger.Warnf("taskx: delay[%s] drain nack error: %v", c.runner.GetName(), err)
+			} else {
+				drained++
+			}
+		}
+		if drained > 0 {
+			c.logger.Infof("taskx: delay[%s] drained %d items from channel back to pending", c.runner.GetName(), drained)
+		}
+		c.taskCh = nil
 	}
 	c.logger.Infof("taskx: delay[%s] stopped", c.runner.GetName())
 }
@@ -132,13 +155,20 @@ func (c *DelayConsumer) startupRecover(ctx context.Context) {
 	case <-time.After(c.procTimeout):
 	}
 
-	recovered, err := c.driver.RecoverProcessing(ctx, c.processingKey(), c.pendingKey(), c.procTimeout)
-	if err != nil {
-		c.logger.Warnf("taskx: delay[%s] recover processing error: %v", c.runner.GetName(), err)
-		return
+	var totalRecovered int64
+	for {
+		recovered, err := c.driver.RecoverProcessing(ctx, c.processingKey(), c.pendingKey(), c.procTimeout)
+		if err != nil {
+			c.logger.Warnf("taskx: delay[%s] recover processing error: %v", c.runner.GetName(), err)
+			break
+		}
+		totalRecovered += recovered
+		if recovered == 0 {
+			break
+		}
 	}
-	if recovered > 0 {
-		c.logger.Infof("taskx: delay[%s] recovered %d orphaned messages from processing", c.runner.GetName(), recovered)
+	if totalRecovered > 0 {
+		c.logger.Infof("taskx: delay[%s] recovered %d orphaned messages from processing", c.runner.GetName(), totalRecovered)
 	}
 }
 
@@ -203,34 +233,40 @@ func (c *DelayConsumer) process(ctx context.Context, raw string, id int) {
 	env, err := core.DecodeEnvelope(raw)
 	if err != nil {
 		c.logger.Errorf("taskx: delay[%s][%d] decode error: %v, raw: %s", c.runner.GetName(), id, err, raw)
-		_ = c.driver.Ack(ctx, c.processingKey(), raw)
+		if ackErr := c.driver.Ack(ctx, c.processingKey(), raw); ackErr != nil {
+			c.logger.Errorf("taskx: delay[%s][%d] ack(decode-err) failed: %v", c.runner.GetName(), id, ackErr)
+		}
 		return
 	}
 
 	result := c.runner.Run(ctx, env.Payload)
 
 	if result.IsOk {
-		_ = c.driver.Ack(ctx, c.processingKey(), raw)
+		if ackErr := c.driver.Ack(ctx, c.processingKey(), raw); ackErr != nil {
+			c.logger.Errorf("taskx: delay[%s][%d] ack failed: %v", c.runner.GetName(), id, ackErr)
+		}
 		return
 	}
 
 	c.logger.Warnf("taskx: delay[%s][%d] run failed: %v", c.runner.GetName(), id, result.Err)
 	env.RetryCount++
 
-	if env.RetryCount >= c.option.MaxRetry {
-		c.logger.Warnf("taskx: delay[%s][%d] max retry reached (%d), moving to dead letter", c.runner.GetName(), id, c.option.MaxRetry)
-		_ = c.driver.MoveToDead(ctx, c.processingKey(), c.deadKey(), raw)
+	if env.RetryCount >= *c.option.MaxRetry {
+		c.logger.Warnf("taskx: delay[%s][%d] max retry reached (%d), moving to dead letter", c.runner.GetName(), id, *c.option.MaxRetry)
+		if err := c.driver.MoveToDead(ctx, c.processingKey(), c.deadKey(), raw); err != nil {
+			c.logger.Errorf("taskx: delay[%s][%d] move-to-dead failed: %v", c.runner.GetName(), id, err)
+		}
 		return
 	}
 
 	newRaw := env.Encode()
-	_ = c.driver.Ack(ctx, c.processingKey(), raw)
-
 	var nextTime int64
 	if result.NextTime > 0 {
 		nextTime = result.NextTime
 	} else {
 		nextTime = time.Now().Unix() + int64(env.RetryCount*5)
 	}
-	_ = c.driver.Add(ctx, c.pendingKey(), newRaw, nextTime)
+	if err := c.driver.RetryRequeue(ctx, c.processingKey(), c.pendingKey(), raw, newRaw, nextTime); err != nil {
+		c.logger.Errorf("taskx: delay[%s][%d] retry-requeue failed: %v", c.runner.GetName(), id, err)
+	}
 }

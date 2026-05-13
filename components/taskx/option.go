@@ -19,6 +19,7 @@ type ManagerConfig struct {
 	PollInterval      time.Duration
 	LockTTL           time.Duration
 	ProcessingTimeout time.Duration
+	RecoverBatchSize  int64 // 崩溃恢复每批次移动的消息数量
 	Logger            core.Logger
 }
 
@@ -28,6 +29,7 @@ func defaultConfig() *ManagerConfig {
 		PollInterval:      time.Second,
 		LockTTL:           30 * time.Second,
 		ProcessingTimeout: 5 * time.Minute,
+		RecoverBatchSize:  1000,
 		Logger:            nil, // 调用方必须提供 Logger
 	}
 }
@@ -58,6 +60,10 @@ func WithLockTTL(ttl time.Duration) Option {
 
 func WithProcessingTimeout(d time.Duration) Option {
 	return func(c *ManagerConfig) { c.ProcessingTimeout = d }
+}
+
+func WithRecoverBatchSize(n int64) Option {
+	return func(c *ManagerConfig) { c.RecoverBatchSize = n }
 }
 
 func WithLogger(l core.Logger) Option {

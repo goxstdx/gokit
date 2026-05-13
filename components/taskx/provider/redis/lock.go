@@ -30,6 +30,13 @@ func NewLockProvider(rdb redis.Cmdable) *LockProvider {
 }
 
 func (p *LockProvider) Lock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	p.mu.Lock()
+	if _, held := p.values[key]; held {
+		p.mu.Unlock()
+		return false, nil
+	}
+	p.mu.Unlock()
+
 	val := randomValue()
 	ok, err := p.rdb.SetNX(ctx, key, val, ttl).Result()
 	if err != nil {

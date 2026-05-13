@@ -15,3 +15,4 @@ type Logger = core.Logger
 
 var NewEnvelope = core.NewEnvelope
 var DecodeEnvelope = core.DecodeEnvelope
+var IntPtr = core.IntPtr
