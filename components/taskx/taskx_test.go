@@ -409,9 +409,11 @@ func TestTimerTaskOptionFallbackAndOverride(t *testing.T) {
 	if err := reg.RegisterTimerTask(globalTask); err != nil {
 		t.Fatal(err)
 	}
-	if err := reg.RegisterTimerTask(overrideTask, core.TimerTaskOption{
-		ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencyForbidOverlap),
-	}); err != nil {
+	if err := reg.RegisterTimerTask(
+		overrideTask, core.TimerTaskOption{
+			ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencyForbidOverlap),
+		},
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -420,9 +422,11 @@ func TestTimerTaskOptionFallbackAndOverride(t *testing.T) {
 		taskx.WithKeyPrefix(prefix),
 		taskx.WithLogger(log),
 		taskx.WithLockTTL(5*time.Second),
-		taskx.WithDefaultTimerTaskOption(core.TimerTaskOption{
-			ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencySinglePerTick),
-		}),
+		taskx.WithDefaultTimerTaskOption(
+			core.TimerTaskOption{
+				ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencySinglePerTick),
+			},
+		),
 	)
 	if err := mgr.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -460,9 +464,11 @@ func TestTimerTaskForbidOverlapRenewsLock(t *testing.T) {
 	var managers []*taskx.Manager
 	for i := 0; i < 2; i++ {
 		reg := taskx.NewRegistry()
-		if err := reg.RegisterTimerTask(sharedTask, core.TimerTaskOption{
-			ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencyForbidOverlap),
-		}); err != nil {
+		if err := reg.RegisterTimerTask(
+			sharedTask, core.TimerTaskOption{
+				ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencyForbidOverlap),
+			},
+		); err != nil {
 			t.Fatal(err)
 		}
 
@@ -547,7 +553,11 @@ func TestPublishAPIs(t *testing.T) {
 	if _, err := mgr.PublishEvent(ctx, &testRunner{name: "publish-event", payload: "event-payload"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mgr.PublishDelay(ctx, &testRunner{name: "publish-delay", payload: "delay-payload"}, time.Now().Add(time.Second).Unix()); err != nil {
+	if _, err := mgr.PublishDelay(
+		ctx,
+		&testRunner{name: "publish-delay", payload: "delay-payload"},
+		time.Now().Add(time.Second).Unix(),
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -849,6 +859,9 @@ func TestManagerLifecycle(t *testing.T) {
 	defer cleanKeys(ctx, rdb, prefix)
 
 	reg := taskx.NewRegistry()
+	if err := reg.RegisterEventRunner(newTestRunner("lifecycle-runner", nil)); err != nil {
+		t.Fatal(err)
+	}
 	mgr := taskx.NewRedisManager(
 		rdb, reg,
 		taskx.WithKeyPrefix(prefix),
@@ -942,7 +955,11 @@ func TestManagerHealthSnapshot(t *testing.T) {
 	}
 
 	// 推入一条未来执行的 delay 消息，验证 pending 长度采样。
-	if _, err := mgr.PublishDelay(ctx, &testRunner{name: "health-delay", payload: "future-job"}, time.Now().Add(30*time.Second).Unix()); err != nil {
+	if _, err := mgr.PublishDelay(
+		ctx,
+		&testRunner{name: "health-delay", payload: "future-job"},
+		time.Now().Add(30*time.Second).Unix(),
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1080,12 +1097,14 @@ func TestEventNextTimeAlertAndNoRetry(t *testing.T) {
 		rdb, reg,
 		taskx.WithKeyPrefix(prefix),
 		taskx.WithLogger(log),
-		taskx.WithAlertFunc(func(data core.AlertData) {
-			select {
-			case alertCh <- data:
-			default:
-			}
-		}),
+		taskx.WithAlertFunc(
+			func(data core.AlertData) {
+				select {
+				case alertCh <- data:
+				default:
+				}
+			},
+		),
 	)
 	if err := mgr.Start(ctx); err != nil {
 		t.Fatal(err)

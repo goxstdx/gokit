@@ -278,7 +278,8 @@ if env, err := mgr.PublishDelayPayload(ctx, "delay-runner-name", rawPayload, exe
 
 ```go
 mgr := taskx.NewRedisManager(
-    rdb, reg,
+    rdb,
+    reg,
     taskx.WithLogger(log),
     taskx.WithHealthInterval(2*time.Second),
     taskx.WithHealthBeatTimeout(10*time.Second),

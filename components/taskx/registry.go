@@ -34,6 +34,14 @@ type Registry struct {
 	timerTasks   map[string]*TimerEntry
 }
 
+func (r *Registry) IsHasRunner() bool {
+	if r.eventRunners == nil && r.delayRunners == nil && r.timerTasks == nil {
+		return false
+	}
+
+	return len(r.eventRunners) > 0 || len(r.delayRunners) > 0 || len(r.timerTasks) > 0
+}
+
 func NewRegistry() *Registry {
 	return &Registry{
 		eventRunners: make(map[string]*EventEntry),

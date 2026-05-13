@@ -93,6 +93,12 @@ type ManagerHealthSnapshot struct {
 	Timer     TimerListenerHealth
 }
 
+type startEntries struct {
+	event map[string]*EventEntry
+	delay map[string]*DelayEntry
+	timer map[string]*TimerEntry
+}
+
 // NewManager 创建任务管理器
 func NewManager(registry *Registry, opts ...Option) *Manager {
 	cfg := defaultConfig()
@@ -102,6 +108,7 @@ func NewManager(registry *Registry, opts ...Option) *Manager {
 	if registry == nil {
 		registry = NewRegistry()
 	}
+
 	return &Manager{
 		cfg:         cfg,
 		registry:    registry,
@@ -130,91 +137,43 @@ func (m *Manager) Config() *ManagerConfig {
 	return m.cfg
 }
 
+// SetRegistry 设置注册中心（仅允许在未运行状态下设置）。
+// 传入 nil 会自动替换为空注册中心。
+func (m *Manager) SetRegistry(registry *Registry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.running {
+		return fmt.Errorf("taskx: cannot set registry while manager is running")
+	}
+	if registry == nil {
+		registry = NewRegistry()
+	}
+	m.registry = registry
+	return nil
+}
+
+// CheckStartReady 校验当前配置是否满足启动条件。
+func (m *Manager) CheckStartReady(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, err := m.checkStartReadyLocked(ctx)
+	return err
+}
+
 // Start 启动所有已注册的队列和任务
 func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.ensureRegistryLocked()
 
 	if m.running {
 		return fmt.Errorf("taskx: manager already running")
 	}
-
-	if m.cfg.Logger == nil {
-		return fmt.Errorf("taskx: logger is required, use WithLogger() to set")
-	}
-	if m.cfg.HealthInterval <= 0 {
-		m.cfg.HealthInterval = defaults.HealthInterval
-	}
-	if m.cfg.HealthBeatTimeout <= 0 {
-		m.cfg.HealthBeatTimeout = defaults.HealthBeatTimeout
-	}
-	if m.cfg.EventPopTimeout <= 0 {
-		m.cfg.EventPopTimeout = defaults.EventPopTimeout
-	}
-	if m.cfg.DelayRetryBaseInterval <= 0 {
-		m.cfg.DelayRetryBaseInterval = defaults.DelayRetryBaseInterval
-	}
-	if m.cfg.TimerHeartbeatInterval <= 0 {
-		// 默认让 timer 心跳快于超时阈值，避免低阈值场景误报不健康。
-		m.cfg.TimerHeartbeatInterval = m.cfg.HealthInterval
-		if hb := m.cfg.HealthBeatTimeout / 2; hb > 0 && (m.cfg.TimerHeartbeatInterval <= 0 || hb < m.cfg.TimerHeartbeatInterval) {
-			m.cfg.TimerHeartbeatInterval = hb
-		}
-		if m.cfg.TimerHeartbeatInterval <= 0 {
-			m.cfg.TimerHeartbeatInterval = defaults.TimerHeartbeatFallback
-		}
-		if m.cfg.TimerHeartbeatInterval < defaults.MinTimerHeartbeat {
-			m.cfg.TimerHeartbeatInterval = defaults.MinTimerHeartbeat
-		}
-	}
-	if m.cfg.AlertQueueSize <= 0 {
-		m.cfg.AlertQueueSize = 1024
-	}
-	m.cfg.OnHeartbeat = m.recordHeartbeat
-
-	eventEntries := m.registry.GetEventRunners()
-	delayEntries := m.registry.GetDelayRunners()
-	timerEntries := m.registry.GetTimerTasks()
-	if len(eventEntries)+len(delayEntries) > 0 && m.cfg.LockDriver == nil {
-		return fmt.Errorf(
-			"taskx: lock driver not configured for %d registered queue runner(s) (event=%d, delay=%d)",
-			len(eventEntries)+len(delayEntries), len(eventEntries), len(delayEntries),
-		)
-	}
-	if len(eventEntries) > 0 {
-		if m.cfg.EventDriver == nil {
-			return fmt.Errorf("taskx: event queue driver not configured for %d registered event runner(s)", len(eventEntries))
-		}
-		if m.eventFactory == nil {
-			return fmt.Errorf("taskx: event consumer factory not configured for %d registered event runner(s)", len(eventEntries))
-		}
-	}
-	if len(delayEntries) > 0 {
-		if m.cfg.DelayDriver == nil {
-			return fmt.Errorf("taskx: delay queue driver not configured for %d registered delay runner(s)", len(delayEntries))
-		}
-		if m.delayFactory == nil {
-			return fmt.Errorf("taskx: delay consumer factory not configured for %d registered delay runner(s)", len(delayEntries))
-		}
-	}
-	if len(timerEntries) > 0 {
-		if m.cfg.LockDriver == nil {
-			return fmt.Errorf("taskx: lock driver not configured for %d registered timer task(s)", len(timerEntries))
-		}
-		if m.timerFactory == nil {
-			return fmt.Errorf("taskx: timer scheduler factory not configured for %d registered timer task(s)", len(timerEntries))
-		}
+	entries, err := m.checkStartReadyLocked(ctx)
+	if err != nil {
+		return err
 	}
 
-	// 检测驱动版本兼容性（如 BLMOVE 要求 Redis >= 6.2）
-	type versionChecker interface {
-		CheckVersion(ctx context.Context) error
-	}
-	if v, ok := m.cfg.EventDriver.(versionChecker); ok {
-		if err := v.CheckVersion(ctx); err != nil {
-			return err
-		}
-	}
 	m.startAlertDispatcherLocked()
 	startSucceeded := false
 	defer func() {
@@ -225,7 +184,7 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	// 启动 EventQueue 消费者
 	if m.cfg.EventDriver != nil && m.eventFactory != nil {
-		for _, entry := range eventEntries {
+		for _, entry := range entries.event {
 			c := m.eventFactory(entry.Runner, entry.Option, m.cfg.EventDriver, m.cfg.LockDriver, m.cfg)
 			if err := c.Start(ctx); err != nil {
 				return fmt.Errorf("taskx: start event[%s]: %w", entry.Runner.GetName(), err)
@@ -236,7 +195,7 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	// 启动 DelayQueue 消费者
 	if m.cfg.DelayDriver != nil && m.delayFactory != nil {
-		for _, entry := range delayEntries {
+		for _, entry := range entries.delay {
 			c := m.delayFactory(entry.Runner, entry.Option, m.cfg.DelayDriver, m.cfg.LockDriver, m.cfg)
 			if err := c.Start(ctx); err != nil {
 				return fmt.Errorf("taskx: start delay[%s]: %w", entry.Runner.GetName(), err)
@@ -248,7 +207,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	// 启动 TimerTask
 	if m.cfg.LockDriver != nil && m.timerFactory != nil {
 		s := m.timerFactory(m.cfg.LockDriver, m.cfg.KeyPrefix, m.cfg)
-		for _, entry := range timerEntries {
+		for _, entry := range entries.timer {
 			opt := entry.Option.WithDefaults(m.cfg.DefaultTimerTask)
 			if err := s.Register(entry.Task, opt); err != nil {
 				return fmt.Errorf("taskx: register timer[%s]: %w", entry.Task.GetName(), err)
@@ -273,15 +232,21 @@ func (m *Manager) Start(ctx context.Context) error {
 func (m *Manager) Stop(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.ensureRegistryLocked()
 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
 	if !m.running {
 		if m.cfg.Logger != nil {
 			m.cfg.Logger.Infof("taskx: manager stop skipped, already stopped")
 		}
+
 		return nil
+	}
+	if m.cfg.Logger == nil {
+		return fmt.Errorf("taskx: logger is required, use WithLogger() to set")
 	}
 	m.cfg.Logger.Infof("taskx: manager stopping")
 
@@ -368,7 +333,12 @@ func (m *Manager) PublishEventEnvelope(ctx context.Context, runnerName string, e
 }
 
 // PublishDelayPayload 直接将 payload 包装为新消息并发布到 DelayQueue。
-func (m *Manager) PublishDelayPayload(ctx context.Context, runnerName string, payload string, executeAt int64) (*core.Envelope, error) {
+func (m *Manager) PublishDelayPayload(
+	ctx context.Context,
+	runnerName string,
+	payload string,
+	executeAt int64,
+) (*core.Envelope, error) {
 	if m.cfg.DelayDriver == nil {
 		return nil, fmt.Errorf("taskx: delay queue driver not configured")
 	}
@@ -377,7 +347,12 @@ func (m *Manager) PublishDelayPayload(ctx context.Context, runnerName string, pa
 }
 
 // PublishDelayEnvelope 将指定 Envelope 发布到 DelayQueue。
-func (m *Manager) PublishDelayEnvelope(ctx context.Context, runnerName string, env *core.Envelope, executeAt int64) (*core.Envelope, error) {
+func (m *Manager) PublishDelayEnvelope(
+	ctx context.Context,
+	runnerName string,
+	env *core.Envelope,
+	executeAt int64,
+) (*core.Envelope, error) {
 	if m.cfg.DelayDriver == nil {
 		return nil, fmt.Errorf("taskx: delay queue driver not configured")
 	}
@@ -403,15 +378,24 @@ func (m *Manager) ExecuteTimerTaskOnce(ctx context.Context, req core.TimerExecut
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
-		return core.RunnerFuncResult{IsOk: false, Err: fmt.Errorf("taskx: timer task name is required")}, fmt.Errorf("taskx: timer task name is required")
+		return core.RunnerFuncResult{
+			IsOk: false,
+			Err:  fmt.Errorf("taskx: timer task name is required"),
+		}, fmt.Errorf("taskx: timer task name is required")
 	}
 	if m.cfg.LockDriver == nil {
-		return core.RunnerFuncResult{IsOk: false, Err: fmt.Errorf("taskx: lock driver not configured")}, fmt.Errorf("taskx: lock driver not configured")
+		return core.RunnerFuncResult{
+			IsOk: false,
+			Err:  fmt.Errorf("taskx: lock driver not configured"),
+		}, fmt.Errorf("taskx: lock driver not configured")
 	}
 
 	entry, ok := m.registry.GetTimerTasks()[name]
 	if !ok || entry == nil || entry.Task == nil {
-		return core.RunnerFuncResult{IsOk: false, Err: fmt.Errorf("taskx: timer task %q not registered", name)}, fmt.Errorf("taskx: timer task %q not registered", name)
+		return core.RunnerFuncResult{
+			IsOk: false,
+			Err:  fmt.Errorf("taskx: timer task %q not registered", name),
+		}, fmt.Errorf("taskx: timer task %q not registered", name)
 	}
 
 	lockKey := fmt.Sprintf("%s:lock:timer:{%s}", m.cfg.KeyPrefix, name)
@@ -419,10 +403,16 @@ func (m *Manager) ExecuteTimerTaskOnce(ctx context.Context, req core.TimerExecut
 	locked, err := m.cfg.LockDriver.Lock(lockCtx, lockKey, m.cfg.LockTTL)
 	lockCancel()
 	if err != nil {
-		return core.RunnerFuncResult{IsOk: false, Err: fmt.Errorf("taskx: acquire timer task lock %q: %w", name, err)}, fmt.Errorf("taskx: acquire timer task lock %q: %w", name, err)
+		return core.RunnerFuncResult{
+			IsOk: false,
+			Err:  fmt.Errorf("taskx: acquire timer task lock %q: %w", name, err),
+		}, fmt.Errorf("taskx: acquire timer task lock %q: %w", name, err)
 	}
 	if !locked {
-		return core.RunnerFuncResult{IsOk: false, Err: fmt.Errorf("taskx: timer task %q is already running", name)}, fmt.Errorf("taskx: timer task %q is already running", name)
+		return core.RunnerFuncResult{
+			IsOk: false,
+			Err:  fmt.Errorf("taskx: timer task %q is already running", name),
+		}, fmt.Errorf("taskx: timer task %q is already running", name)
 	}
 	defer func() {
 		unlockCtx, unlockCancel := m.internalOpContext(context.Background(), 0)
@@ -435,6 +425,7 @@ func (m *Manager) ExecuteTimerTaskOnce(ctx context.Context, req core.TimerExecut
 
 // Registry 获取注册中心
 func (m *Manager) Registry() *Registry {
+	m.ensureRegistryLocked()
 	return m.registry
 }
 
@@ -782,4 +773,119 @@ func (m *Manager) internalOpContext(parent context.Context, timeout time.Duratio
 		timeout = defaults.InternalOpTimeout
 	}
 	return context.WithTimeout(parent, timeout)
+}
+
+func (m *Manager) ensureRegistryLocked() {
+	if m.registry == nil {
+		m.registry = NewRegistry()
+	}
+}
+
+func (m *Manager) checkStartReadyLocked(ctx context.Context) (startEntries, error) {
+	m.ensureRegistryLocked()
+	if m.cfg.Logger == nil {
+		return startEntries{}, fmt.Errorf("taskx: logger is required, use WithLogger() to set")
+	}
+
+	if m.registry == nil {
+		return startEntries{}, fmt.Errorf("taskx: registry is required")
+	}
+	if !m.registry.IsHasRunner() {
+		return startEntries{}, fmt.Errorf("taskx: at least one runner/task must be registered")
+	}
+
+	if m.cfg.HealthInterval <= 0 {
+		m.cfg.HealthInterval = defaults.HealthInterval
+	}
+	if m.cfg.HealthBeatTimeout <= 0 {
+		m.cfg.HealthBeatTimeout = defaults.HealthBeatTimeout
+	}
+	if m.cfg.EventPopTimeout <= 0 {
+		m.cfg.EventPopTimeout = defaults.EventPopTimeout
+	}
+	if m.cfg.DelayRetryBaseInterval <= 0 {
+		m.cfg.DelayRetryBaseInterval = defaults.DelayRetryBaseInterval
+	}
+	if m.cfg.TimerHeartbeatInterval <= 0 {
+		// 默认让 timer 心跳快于超时阈值，避免低阈值场景误报不健康。
+		m.cfg.TimerHeartbeatInterval = m.cfg.HealthInterval
+		if hb := m.cfg.HealthBeatTimeout / 2; hb > 0 && (m.cfg.TimerHeartbeatInterval <= 0 || hb < m.cfg.TimerHeartbeatInterval) {
+			m.cfg.TimerHeartbeatInterval = hb
+		}
+		if m.cfg.TimerHeartbeatInterval <= 0 {
+			m.cfg.TimerHeartbeatInterval = defaults.TimerHeartbeatFallback
+		}
+		if m.cfg.TimerHeartbeatInterval < defaults.MinTimerHeartbeat {
+			m.cfg.TimerHeartbeatInterval = defaults.MinTimerHeartbeat
+		}
+	}
+	if m.cfg.AlertQueueSize <= 0 {
+		m.cfg.AlertQueueSize = 1024
+	}
+	m.cfg.OnHeartbeat = m.recordHeartbeat
+
+	entries := startEntries{
+		event: m.registry.GetEventRunners(),
+		delay: m.registry.GetDelayRunners(),
+		timer: m.registry.GetTimerTasks(),
+	}
+	if len(entries.event)+len(entries.delay) > 0 && m.cfg.LockDriver == nil {
+		return startEntries{}, fmt.Errorf(
+			"taskx: lock driver not configured for %d registered queue runner(s) (event=%d, delay=%d)",
+			len(entries.event)+len(entries.delay), len(entries.event), len(entries.delay),
+		)
+	}
+	if len(entries.event) > 0 {
+		if m.cfg.EventDriver == nil {
+			return startEntries{}, fmt.Errorf(
+				"taskx: event queue driver not configured for %d registered event runner(s)",
+				len(entries.event),
+			)
+		}
+		if m.eventFactory == nil {
+			return startEntries{}, fmt.Errorf(
+				"taskx: event consumer factory not configured for %d registered event runner(s)",
+				len(entries.event),
+			)
+		}
+	}
+	if len(entries.delay) > 0 {
+		if m.cfg.DelayDriver == nil {
+			return startEntries{}, fmt.Errorf(
+				"taskx: delay queue driver not configured for %d registered delay runner(s)",
+				len(entries.delay),
+			)
+		}
+		if m.delayFactory == nil {
+			return startEntries{}, fmt.Errorf(
+				"taskx: delay consumer factory not configured for %d registered delay runner(s)",
+				len(entries.delay),
+			)
+		}
+	}
+	if len(entries.timer) > 0 {
+		if m.cfg.LockDriver == nil {
+			return startEntries{}, fmt.Errorf(
+				"taskx: lock driver not configured for %d registered timer task(s)",
+				len(entries.timer),
+			)
+		}
+		if m.timerFactory == nil {
+			return startEntries{}, fmt.Errorf(
+				"taskx: timer scheduler factory not configured for %d registered timer task(s)",
+				len(entries.timer),
+			)
+		}
+	}
+
+	// 检测驱动版本兼容性（如 BLMOVE 要求 Redis >= 6.2）
+	type versionChecker interface {
+		CheckVersion(ctx context.Context) error
+	}
+	if v, ok := m.cfg.EventDriver.(versionChecker); ok {
+		if err := v.CheckVersion(ctx); err != nil {
+			return startEntries{}, err
+		}
+	}
+	return entries, nil
 }

@@ -194,6 +194,76 @@ func (c *internalConsumer) Stop() {
 	}
 }
 
+func TestNewManagerWithNilRegistryCreatesEmptyRegistry(t *testing.T) {
+	mgr := NewManager(nil, WithLogger(newInternalTestLogger(t)))
+	if mgr.Registry() == nil {
+		t.Fatal("expected nil registry to be replaced with an empty registry")
+	}
+}
+
+func TestNewManagerUsesCtorRegistry(t *testing.T) {
+	reg := NewRegistry()
+	mgr := NewManager(reg)
+	if mgr.Registry() != reg {
+		t.Fatal("expected constructor registry to be used")
+	}
+}
+
+func TestSetRegistrySupportsReplaceAndNilReset(t *testing.T) {
+	mgr := NewManager(nil, WithLogger(newInternalTestLogger(t)))
+	reg := NewRegistry()
+	if err := mgr.SetRegistry(reg); err != nil {
+		t.Fatalf("set registry: %v", err)
+	}
+	if mgr.Registry() != reg {
+		t.Fatal("expected registry to be replaced")
+	}
+	if err := mgr.SetRegistry(nil); err != nil {
+		t.Fatalf("set nil registry: %v", err)
+	}
+	if mgr.Registry() == nil {
+		t.Fatal("expected nil registry input to be replaced by empty registry")
+	}
+}
+
+func TestSetRegistryFailsWhileRunning(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.RegisterEventRunner(internalQueueRunner{name: "evt"}); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewManager(
+		reg,
+		WithLogger(newInternalTestLogger(t)),
+		WithLockDriver(internalLockDriver{}),
+		WithEventQueueDriver(internalEventDriver{}),
+	)
+	mgr.SetEventConsumerFactory(
+		func(core.QueueRunner, core.RunnerOption, driver.EventQueueDriver, driver.LockDriver, *ManagerConfig) consumer {
+			return &internalConsumer{}
+		},
+	)
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = mgr.Stop(context.Background()) }()
+
+	if err := mgr.SetRegistry(NewRegistry()); err == nil || !strings.Contains(
+		err.Error(),
+		"cannot set registry while manager is running",
+	) {
+		t.Fatalf("expected running set registry error, got %v", err)
+	}
+}
+
+func TestCheckStartReadyFailsWithoutRegisteredRunner(t *testing.T) {
+	mgr := NewManager(nil, WithLogger(newInternalTestLogger(t)))
+	if err := mgr.CheckStartReady(context.Background()); err == nil || !strings.Contains(
+		err.Error(),
+		"at least one runner/task",
+	) {
+		t.Fatalf("expected empty registry error, got %v", err)
+	}
+}
 func TestNewManagerWithNilRegistryStarts(t *testing.T) {
 	mgr := NewManager(nil, WithLogger(newInternalTestLogger(t)))
 	if mgr.Registry() == nil {
@@ -221,10 +291,20 @@ func TestStartFailsWhenRegisteredComponentsAreMissingDependencies(t *testing.T) 
 	if err := eventReg.RegisterEventRunner(internalQueueRunner{name: "evt"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewManager(eventReg, WithLogger(log)).Start(context.Background()); err == nil || !strings.Contains(err.Error(), "lock driver not configured") {
+	if err := NewManager(
+		eventReg,
+		WithLogger(log),
+	).Start(context.Background()); err == nil || !strings.Contains(
+		err.Error(),
+		"lock driver not configured",
+	) {
 		t.Fatalf("expected missing lock driver error for queue mode, got %v", err)
 	}
-	if err := NewManager(eventReg, WithLogger(log), WithLockDriver(internalLockDriver{})).Start(context.Background()); err == nil || !strings.Contains(err.Error(), "event queue driver not configured") {
+	if err := NewManager(
+		eventReg,
+		WithLogger(log),
+		WithLockDriver(internalLockDriver{}),
+	).Start(context.Background()); err == nil || !strings.Contains(err.Error(), "event queue driver not configured") {
 		t.Fatalf("expected missing event driver error after lock is configured, got %v", err)
 	}
 	if err := NewManager(
@@ -240,10 +320,20 @@ func TestStartFailsWhenRegisteredComponentsAreMissingDependencies(t *testing.T) 
 	if err := delayReg.RegisterDelayRunner(internalQueueRunner{name: "delay"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewManager(delayReg, WithLogger(log)).Start(context.Background()); err == nil || !strings.Contains(err.Error(), "lock driver not configured") {
+	if err := NewManager(
+		delayReg,
+		WithLogger(log),
+	).Start(context.Background()); err == nil || !strings.Contains(
+		err.Error(),
+		"lock driver not configured",
+	) {
 		t.Fatalf("expected missing lock driver error for queue mode, got %v", err)
 	}
-	if err := NewManager(delayReg, WithLogger(log), WithLockDriver(internalLockDriver{})).Start(context.Background()); err == nil || !strings.Contains(err.Error(), "delay queue driver not configured") {
+	if err := NewManager(
+		delayReg,
+		WithLogger(log),
+		WithLockDriver(internalLockDriver{}),
+	).Start(context.Background()); err == nil || !strings.Contains(err.Error(), "delay queue driver not configured") {
 		t.Fatalf("expected missing delay driver error after lock is configured, got %v", err)
 	}
 	if err := NewManager(
@@ -259,10 +349,20 @@ func TestStartFailsWhenRegisteredComponentsAreMissingDependencies(t *testing.T) 
 	if err := timerReg.RegisterTimerTask(internalTimerRunner{name: "timer"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewManager(timerReg, WithLogger(log)).Start(context.Background()); err == nil || !strings.Contains(err.Error(), "lock driver not configured") {
+	if err := NewManager(
+		timerReg,
+		WithLogger(log),
+	).Start(context.Background()); err == nil || !strings.Contains(
+		err.Error(),
+		"lock driver not configured",
+	) {
 		t.Fatalf("expected missing lock driver error, got %v", err)
 	}
-	if err := NewManager(timerReg, WithLogger(log), WithLockDriver(internalLockDriver{})).Start(context.Background()); err == nil || !strings.Contains(err.Error(), "timer scheduler factory not configured") {
+	if err := NewManager(
+		timerReg,
+		WithLogger(log),
+		WithLockDriver(internalLockDriver{}),
+	).Start(context.Background()); err == nil || !strings.Contains(err.Error(), "timer scheduler factory not configured") {
 		t.Fatalf("expected missing timer factory error, got %v", err)
 	}
 }
@@ -286,12 +386,14 @@ func TestStartFailureCleansAlertDispatcherAndStartedConsumers(t *testing.T) {
 		WithAlertFunc(originalAlert),
 	)
 	var created atomic.Int64
-	mgr.SetEventConsumerFactory(func(core.QueueRunner, core.RunnerOption, driver.EventQueueDriver, driver.LockDriver, *ManagerConfig) consumer {
-		if created.Add(1) == 2 {
-			return &internalConsumer{startErr: errors.New("boom"), stopped: &stopped}
-		}
-		return &internalConsumer{stopped: &stopped}
-	})
+	mgr.SetEventConsumerFactory(
+		func(core.QueueRunner, core.RunnerOption, driver.EventQueueDriver, driver.LockDriver, *ManagerConfig) consumer {
+			if created.Add(1) == 2 {
+				return &internalConsumer{startErr: errors.New("boom"), stopped: &stopped}
+			}
+			return &internalConsumer{stopped: &stopped}
+		},
+	)
 
 	if err := mgr.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("expected start failure, got %v", err)
@@ -300,7 +402,12 @@ func TestStartFailureCleansAlertDispatcherAndStartedConsumers(t *testing.T) {
 		t.Fatal("manager should not be running after failed start")
 	}
 	if mgr.alertQueue != nil || mgr.alertCancel != nil || mgr.alertHandler != nil {
-		t.Fatalf("alert dispatcher not cleaned: queue=%v cancel=%v handler=%v", mgr.alertQueue, mgr.alertCancel, mgr.alertHandler)
+		t.Fatalf(
+			"alert dispatcher not cleaned: queue=%v cancel=%v handler=%v",
+			mgr.alertQueue,
+			mgr.alertCancel,
+			mgr.alertHandler,
+		)
 	}
 	if mgr.cfg.OnAlert == nil {
 		t.Fatal("expected original alert handler to be restored")
@@ -312,7 +419,7 @@ func TestStartFailureCleansAlertDispatcherAndStartedConsumers(t *testing.T) {
 
 func TestPublishDelayAllowsImmediateExecuteAt(t *testing.T) {
 	drv := &internalDelayDriver{}
-	mgr := NewManager(NewRegistry(), WithLogger(newInternalTestLogger(t)), WithDelayQueueDriver(drv))
+	mgr := NewManager(nil, WithLogger(newInternalTestLogger(t)), WithDelayQueueDriver(drv))
 	now := time.Now().Unix()
 	env, err := mgr.PublishDelayPayload(context.Background(), "delay-now", "payload", now)
 	if err != nil {
@@ -383,7 +490,12 @@ func TestDelayRetryBaseIntervalConfigControlsFallbackSchedule(t *testing.T) {
 	select {
 	case got := <-drv.retryAtCh:
 		if got < before+2 || got > time.Now().Unix()+3 {
-			t.Fatalf("retry executeAt not based on configured interval: got=%d before=%d now=%d", got, before, time.Now().Unix())
+			t.Fatalf(
+				"retry executeAt not based on configured interval: got=%d before=%d now=%d",
+				got,
+				before,
+				time.Now().Unix(),
+			)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for RetryRequeue")
@@ -391,7 +503,7 @@ func TestDelayRetryBaseIntervalConfigControlsFallbackSchedule(t *testing.T) {
 }
 
 func TestStopAlertDispatcherDrainDoesNotInvokeExternalHandler(t *testing.T) {
-	mgr := NewManager(NewRegistry(), WithLogger(newInternalTestLogger(t)))
+	mgr := NewManager(nil, WithLogger(newInternalTestLogger(t)))
 
 	var handled atomic.Int64
 	originalAlert := func(core.AlertData) { handled.Add(1) }

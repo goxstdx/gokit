@@ -14,7 +14,7 @@ import (
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/timer"
 )
 
-// NewRedisManager 快捷构造：传入 redis.Cmdable 自动创建 Redis 驱动并组装 Manager
+// NewRedisManager 快捷构造：传入 redis.Cmdable 自动创建 Redis 驱动并组装 Manager。
 func NewRedisManager(rdb redis.Cmdable, registry *Registry, opts ...Option) *Manager {
 	ep := redisx.NewEventQueueProvider(rdb)
 	dp := redisx.NewDelayQueueProvider(rdb)
@@ -46,8 +46,19 @@ func newEventConsumerFactory(
 	cfg *ManagerConfig,
 ) consumer {
 	return queue.NewEventConsumer(
-		runner, opt, eq, lk,
-		cfg.KeyPrefix, cfg.LockTTL, cfg.ProcessingTimeout, cfg.InternalOpTimeout, cfg.EventPopTimeout, cfg.Logger, cfg.OnAlert, cfg.OnHeartbeat, cfg.TraceContextKey,
+		runner,
+		opt,
+		eq,
+		lk,
+		cfg.KeyPrefix,
+		cfg.LockTTL,
+		cfg.ProcessingTimeout,
+		cfg.InternalOpTimeout,
+		cfg.EventPopTimeout,
+		cfg.Logger,
+		cfg.OnAlert,
+		cfg.OnHeartbeat,
+		cfg.TraceContextKey,
 	)
 }
 
@@ -57,13 +68,34 @@ func newDelayConsumerFactory(
 	cfg *ManagerConfig,
 ) consumer {
 	return queue.NewDelayConsumer(
-		runner, opt, dq, lk,
-		cfg.KeyPrefix, cfg.LockTTL, cfg.PollInterval, cfg.ProcessingTimeout, cfg.InternalOpTimeout, cfg.DelayRetryBaseInterval, cfg.Logger, cfg.OnAlert, cfg.OnHeartbeat, cfg.TraceContextKey,
+		runner,
+		opt,
+		dq,
+		lk,
+		cfg.KeyPrefix,
+		cfg.LockTTL,
+		cfg.PollInterval,
+		cfg.ProcessingTimeout,
+		cfg.InternalOpTimeout,
+		cfg.DelayRetryBaseInterval,
+		cfg.Logger,
+		cfg.OnAlert,
+		cfg.OnHeartbeat,
+		cfg.TraceContextKey,
 	)
 }
 
 func newTimerSchedulerFactory(lk driver.LockDriver, prefix string, cfg *ManagerConfig) timerScheduler {
-	return timer.NewScheduler(lk, prefix, cfg.LockTTL, cfg.InternalOpTimeout, cfg.TimerHeartbeatInterval, cfg.Logger, cfg.OnAlert, cfg.OnHeartbeat)
+	return timer.NewScheduler(
+		lk,
+		prefix,
+		cfg.LockTTL,
+		cfg.InternalOpTimeout,
+		cfg.TimerHeartbeatInterval,
+		cfg.Logger,
+		cfg.OnAlert,
+		cfg.OnHeartbeat,
+	)
 }
 
 // RecoverEventDead 从事件队列死信中恢复消息，重置重试计数。
@@ -120,9 +152,12 @@ func recoverEventDeadWithReset(
 			if onAlert != nil {
 				onAlert(
 					core.AlertData{
-						Source:       core.AlertSourceEvent,
-						AlertType:    core.AlertCorruptMessage,
-						RunnerResult: core.RunnerFuncResult{IsOk: false, Err: fmt.Errorf("recover event dead: corrupt message skipped, raw: %s", raw)},
+						Source:    core.AlertSourceEvent,
+						AlertType: core.AlertCorruptMessage,
+						RunnerResult: core.RunnerFuncResult{
+							IsOk: false,
+							Err:  fmt.Errorf("recover event dead: corrupt message skipped, raw: %s", raw),
+						},
 					},
 				)
 			}
@@ -162,9 +197,12 @@ func recoverDelayDeadWithReset(
 			if onAlert != nil {
 				onAlert(
 					core.AlertData{
-						Source:       core.AlertSourceDelay,
-						AlertType:    core.AlertCorruptMessage,
-						RunnerResult: core.RunnerFuncResult{IsOk: false, Err: fmt.Errorf("recover delay dead: corrupt message skipped, raw: %s", raw)},
+						Source:    core.AlertSourceDelay,
+						AlertType: core.AlertCorruptMessage,
+						RunnerResult: core.RunnerFuncResult{
+							IsOk: false,
+							Err:  fmt.Errorf("recover delay dead: corrupt message skipped, raw: %s", raw),
+						},
 					},
 				)
 			}
