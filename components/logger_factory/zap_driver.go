@@ -18,6 +18,8 @@ type zapLogger struct {
 	cfg    Config
 }
 
+const zapBaseCallerSkip = 1
+
 func newZapLogger(cfg Config, w io.Writer) (*zapLogger, error) {
 	encoderCfg := zapcore.EncoderConfig{
 		TimeKey:        "time",
@@ -37,6 +39,8 @@ func newZapLogger(cfg Config, w io.Writer) (*zapLogger, error) {
 
 	if !cfg.AddCaller {
 		encoderCfg.CallerKey = ""
+	} else if cfg.Caller != nil && cfg.Caller.Key != "" {
+		encoderCfg.CallerKey = cfg.Caller.Key
 	}
 
 	var encoder zapcore.Encoder
@@ -50,8 +54,13 @@ func newZapLogger(cfg Config, w io.Writer) (*zapLogger, error) {
 	ws := zapcore.AddSync(w)
 	core := zapcore.NewCore(encoder, ws, toZapLevel(cfg.Level))
 
+	cfgCallerSkip := 0
+	if cfg.Caller != nil {
+		cfgCallerSkip = cfg.Caller.Skip
+	}
+
 	opts := []zap.Option{
-		zap.AddCallerSkip(1), // 跳过封装层，指向真实调用方
+		zap.AddCallerSkip(zapBaseCallerSkip + cfgCallerSkip),
 	}
 	if cfg.AddCaller {
 		opts = append(opts, zap.AddCaller())
@@ -116,43 +125,43 @@ func (z *zapLogger) Fatalf(format string, args ...any) {
 // --- Context 方法 ---
 
 func (z *zapLogger) DebugCtx(ctx context.Context, msg string, fields ...Field) {
-	z.logger.Debug(msg, z.ctxFields(ctx, fields)...)
+	z.loggerWithCallerFromContext(ctx).Debug(msg, z.ctxFields(ctx, fields)...)
 }
 
 func (z *zapLogger) InfoCtx(ctx context.Context, msg string, fields ...Field) {
-	z.logger.Info(msg, z.ctxFields(ctx, fields)...)
+	z.loggerWithCallerFromContext(ctx).Info(msg, z.ctxFields(ctx, fields)...)
 }
 
 func (z *zapLogger) WarnCtx(ctx context.Context, msg string, fields ...Field) {
-	z.logger.Warn(msg, z.ctxFields(ctx, fields)...)
+	z.loggerWithCallerFromContext(ctx).Warn(msg, z.ctxFields(ctx, fields)...)
 }
 
 func (z *zapLogger) ErrorCtx(ctx context.Context, msg string, fields ...Field) {
-	z.logger.Error(msg, z.ctxFields(ctx, fields)...)
+	z.loggerWithCallerFromContext(ctx).Error(msg, z.ctxFields(ctx, fields)...)
 }
 
 func (z *zapLogger) FatalCtx(ctx context.Context, msg string, fields ...Field) {
-	z.logger.Fatal(msg, z.ctxFields(ctx, fields)...)
+	z.loggerWithCallerFromContext(ctx).Fatal(msg, z.ctxFields(ctx, fields)...)
 }
 
 func (z *zapLogger) DebugCtxf(ctx context.Context, format string, args ...any) {
-	z.logger.Debug(fmt.Sprintf(format, args...), z.ctxFields(ctx, nil)...)
+	z.loggerWithCallerFromContext(ctx).Debug(fmt.Sprintf(format, args...), z.ctxFields(ctx, nil)...)
 }
 
 func (z *zapLogger) InfoCtxf(ctx context.Context, format string, args ...any) {
-	z.logger.Info(fmt.Sprintf(format, args...), z.ctxFields(ctx, nil)...)
+	z.loggerWithCallerFromContext(ctx).Info(fmt.Sprintf(format, args...), z.ctxFields(ctx, nil)...)
 }
 
 func (z *zapLogger) WarnCtxf(ctx context.Context, format string, args ...any) {
-	z.logger.Warn(fmt.Sprintf(format, args...), z.ctxFields(ctx, nil)...)
+	z.loggerWithCallerFromContext(ctx).Warn(fmt.Sprintf(format, args...), z.ctxFields(ctx, nil)...)
 }
 
 func (z *zapLogger) ErrorCtxf(ctx context.Context, format string, args ...any) {
-	z.logger.Error(fmt.Sprintf(format, args...), z.ctxFields(ctx, nil)...)
+	z.loggerWithCallerFromContext(ctx).Error(fmt.Sprintf(format, args...), z.ctxFields(ctx, nil)...)
 }
 
 func (z *zapLogger) FatalCtxf(ctx context.Context, format string, args ...any) {
-	z.logger.Fatal(fmt.Sprintf(format, args...), z.ctxFields(ctx, nil)...)
+	z.loggerWithCallerFromContext(ctx).Fatal(fmt.Sprintf(format, args...), z.ctxFields(ctx, nil)...)
 }
 
 func (z *zapLogger) With(key string, val any) Logger {
@@ -206,6 +215,14 @@ func (z *zapLogger) ctxFields(ctx context.Context, fields []Field) []zap.Field {
 	}
 	all = append(all, fields...)
 	return toZapFields(all)
+}
+
+func (z *zapLogger) loggerWithCallerFromContext(ctx context.Context) *zap.Logger {
+	dynamicSkip := callerSkipFromContext(ctx)
+	if dynamicSkip <= 0 {
+		return z.logger
+	}
+	return z.logger.WithOptions(zap.AddCallerSkip(dynamicSkip))
 }
 
 func toZapLevel(lvl Level) zapcore.Level {

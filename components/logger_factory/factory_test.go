@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,24 @@ var gormConfig = logger.Config{
 
 func init() {
 	os.MkdirAll(testLogDir, 0755)
+}
+
+func readRotatedLogContent(t *testing.T, dir, baseName string) string {
+	t.Helper()
+	pattern := filepath.Join(dir, baseName+".*.log")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		t.Fatalf("glob rotated log failed: %v", err)
+	}
+	if len(matches) == 0 {
+		t.Fatalf("no rotated log found with pattern: %s", pattern)
+	}
+	sort.Strings(matches)
+	content, err := os.ReadFile(matches[len(matches)-1])
+	if err != nil {
+		t.Fatalf("read rotated log failed: %v", err)
+	}
+	return string(content)
 }
 
 func TestSlogDriver_ConsoleOnly(t *testing.T) {
@@ -43,7 +62,6 @@ func TestSlogDriver_ConsoleOnly(t *testing.T) {
 
 func TestSlogDriver_FileOnly(t *testing.T) {
 	tmpDir := testLogDir
-	tmpFile := filepath.Join(tmpDir, "slog-test.log")
 
 	logger, err := NewLogger(
 		Config{
@@ -62,16 +80,14 @@ func TestSlogDriver_FileOnly(t *testing.T) {
 	logger.Info("slog file test")
 	logger.Sync()
 
-	content, _ := os.ReadFile(tmpFile)
-	if !strings.Contains(string(content), "slog file test") {
+	content := readRotatedLogContent(t, tmpDir, "slog-test")
+	if !strings.Contains(content, "slog file test") {
 		t.Errorf("expected 'slog file test' in output")
 	}
-	t.Logf("Log file: %s", tmpFile)
 }
 
 func TestSlogDriver_Both(t *testing.T) {
 	tmpDir := testLogDir
-	tmpFile := filepath.Join(tmpDir, "slog-both.log")
 
 	logger, err := NewLogger(
 		Config{
@@ -90,11 +106,10 @@ func TestSlogDriver_Both(t *testing.T) {
 	logger.Info("slog both test")
 	logger.Sync()
 
-	content, _ := os.ReadFile(tmpFile)
-	if !strings.Contains(string(content), "slog both test") {
+	content := readRotatedLogContent(t, tmpDir, "slog-both")
+	if !strings.Contains(content, "slog both test") {
 		t.Errorf("expected 'slog both test' in output")
 	}
-	t.Logf("Log file: %s", tmpFile)
 }
 
 func TestSlogDriver_Development(t *testing.T) {
@@ -194,7 +209,7 @@ func TestSlogDriver_With(t *testing.T) {
 		},
 	)
 
-	child := logger.With(String("service", "api"))
+	child := logger.With("service", "api")
 	child.Info("request")
 
 	t.Logf("Log file: %s", filepath.Join(tmpDir, "slog-with.log"))
@@ -257,7 +272,6 @@ func TestZapDriver_ConsoleOnly(t *testing.T) {
 
 func TestZapDriver_FileOnly(t *testing.T) {
 	tmpDir := testLogDir
-	tmpFile := filepath.Join(tmpDir, "zap-test.log")
 
 	logger, err := NewLogger(
 		Config{
@@ -276,16 +290,14 @@ func TestZapDriver_FileOnly(t *testing.T) {
 	logger.Info("zap file test")
 	logger.Sync()
 
-	content, _ := os.ReadFile(tmpFile)
-	if !strings.Contains(string(content), "zap file test") {
+	content := readRotatedLogContent(t, tmpDir, "zap-test")
+	if !strings.Contains(content, "zap file test") {
 		t.Errorf("expected 'zap file test' in output")
 	}
-	t.Logf("Log file: %s", tmpFile)
 }
 
 func TestZapDriver_Both(t *testing.T) {
 	tmpDir := testLogDir
-	tmpFile := filepath.Join(tmpDir, "zap-both.log")
 
 	logger, err := NewLogger(
 		Config{
@@ -304,11 +316,10 @@ func TestZapDriver_Both(t *testing.T) {
 	logger.Info("zap both test")
 	logger.Sync()
 
-	content, _ := os.ReadFile(tmpFile)
-	if !strings.Contains(string(content), "zap both test") {
+	content := readRotatedLogContent(t, tmpDir, "zap-both")
+	if !strings.Contains(content, "zap both test") {
 		t.Errorf("expected 'zap both test' in output")
 	}
-	t.Logf("Log file: %s", tmpFile)
 }
 
 func TestZapDriver_Development(t *testing.T) {
@@ -408,7 +419,7 @@ func TestZapDriver_With(t *testing.T) {
 		},
 	)
 
-	child := logger.With(String("service", "worker"))
+	child := logger.With("service", "worker")
 	child.Info("task started")
 
 	t.Logf("Log file: %s", filepath.Join(tmpDir, "zap-with.log"))
@@ -555,6 +566,15 @@ func TestConfig_ApplyDefaults(t *testing.T) {
 	}
 	if cfg.OutputMode != OutputModeConsole {
 		t.Errorf("expected OutputMode %q, got %q", OutputModeConsole, cfg.OutputMode)
+	}
+	if cfg.Caller == nil {
+		t.Fatal("expected Caller default config, got nil")
+	}
+	if cfg.Caller.Key != "caller" {
+		t.Errorf("expected Caller.Key %q, got %q", "caller", cfg.Caller.Key)
+	}
+	if cfg.Caller.Skip != 0 {
+		t.Errorf("expected Caller.Skip %d, got %d", 0, cfg.Caller.Skip)
 	}
 }
 

@@ -30,9 +30,15 @@ type Config struct {
 	OutputMode       OutputMode       // 输出模式
 	TimeFormat       string           // 时间格式，默认 "2006-01-02 15:04:05.000"
 	AddCaller        bool             // 是否显示调用位置
+	Caller           *CallerConfig    // caller/source 相关配置，为 nil 时使用默认配置
 	Development      bool             // 开发模式，强制输出到 console
 	Rotation         *RotationConfig  // 文件切割，File 不为空时生效
 	ContextExtractor ContextExtractor // 从 context 中提取自定义字段
+}
+
+type CallerConfig struct {
+	Key  string // 调用位置字段名；为空时使用默认值 "caller"
+	Skip int    // 业务侧额外 skip 层数，实际生效值 = 驱动 base + Skip + 动态覆盖 skip
 }
 
 type FileConfig struct {
@@ -54,6 +60,12 @@ func GetDefaultRotationConfig() *RotationConfig {
 	}
 }
 
+func GetDefaultCallerConfig() *CallerConfig {
+	return &CallerConfig{
+		Key: "caller",
+	}
+}
+
 func (c *Config) applyDefaults() {
 	if c.TimeFormat == "" {
 		c.TimeFormat = defaultTimeFormat
@@ -66,6 +78,15 @@ func (c *Config) applyDefaults() {
 	}
 	if c.OutputMode == "" {
 		c.OutputMode = OutputModeConsole
+	}
+	if c.Caller == nil {
+		c.Caller = GetDefaultCallerConfig()
+	}
+	if c.Caller.Key == "" {
+		c.Caller.Key = "caller"
+	}
+	if c.Caller.Skip < 0 {
+		c.Caller.Skip = 0
 	}
 	if c.File != nil {
 		c.File.Path = strings.TrimRight(c.File.Path, "/")

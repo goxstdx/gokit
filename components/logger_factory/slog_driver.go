@@ -18,6 +18,8 @@ type slogLogger struct {
 	addCaller bool
 }
 
+const slogBaseCallerSkip = 3
+
 func newSlogLogger(cfg Config, w io.Writer) *slogLogger {
 	opts := &slog.HandlerOptions{
 		Level:     toSlogLevel(cfg.Level),
@@ -25,6 +27,15 @@ func newSlogLogger(cfg Config, w io.Writer) *slogLogger {
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			if a.Key == slog.TimeKey {
 				a.Value = slog.StringValue(a.Value.Time().Format(cfg.TimeFormat))
+			}
+			if a.Key == slog.SourceKey {
+				if src, ok := a.Value.Any().(*slog.Source); ok && src != nil {
+					// 与 zap 默认 caller 保持一致：统一为 file:line，避免额外函数名解析开销。
+					a.Value = slog.StringValue(fmt.Sprintf("%s:%d", src.File, src.Line))
+				}
+			}
+			if cfg.Caller != nil && cfg.Caller.Key != "" && a.Key == slog.SourceKey {
+				a.Key = cfg.Caller.Key
 			}
 			return a
 		},
@@ -177,6 +188,10 @@ func (s *slogLogger) GetGormLogger(config grom_logger.Config) grom_logger.Interf
 
 // log 是核心写入方法，统一处理 caller skip、context 提取
 func (s *slogLogger) log(ctx context.Context, lvl Level, msg string, fields []Field) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	sLvl := toSlogLevel(lvl)
 	if !s.logger.Enabled(ctx, sLvl) {
 		return
@@ -188,13 +203,21 @@ func (s *slogLogger) log(ctx context.Context, lvl Level, msg string, fields []Fi
 	}
 	allFields = append(allFields, fields...)
 
-	// callerSkip=3: log -> public method -> caller
+	// callerSkip = 驱动 base + config 额外层数 + 动态覆盖层数
 	var pcs [1]uintptr
-	runtime.Callers(3, pcs[:])
+	runtime.Callers(s.effectiveCallerSkip(ctx), pcs[:])
 
 	r := slog.NewRecord(time.Now(), sLvl, msg, pcs[0])
 	r.Add(fieldsToSlogAttrs(allFields)...)
 	_ = s.logger.Handler().Handle(ctx, r)
+}
+
+func (s *slogLogger) effectiveCallerSkip(ctx context.Context) int {
+	cfgSkip := 0
+	if s.cfg.Caller != nil {
+		cfgSkip = s.cfg.Caller.Skip
+	}
+	return slogBaseCallerSkip + cfgSkip + callerSkipFromContext(ctx)
 }
 
 func toSlogLevel(lvl Level) slog.Level {
