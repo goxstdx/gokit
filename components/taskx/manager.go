@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
@@ -52,6 +53,38 @@ type Manager struct {
 	consumers []consumer
 	scheduler timerScheduler
 	running   bool
+
+	monitorCancel context.CancelFunc
+	monitorWG     sync.WaitGroup
+
+	healthMu       sync.RWMutex
+	eventBeatAt    map[string]time.Time
+	delayBeatAt    map[string]time.Time
+	timerBeatAt    time.Time
+	healthSnapshot ManagerHealthSnapshot
+}
+
+// QueueListenerHealth 队列监听健康信息
+type QueueListenerHealth struct {
+	Alive      bool
+	LastBeatAt time.Time
+	PendingLen int64
+	LenError   string
+}
+
+// TimerListenerHealth 定时调度器健康信息
+type TimerListenerHealth struct {
+	Alive      bool
+	LastBeatAt time.Time
+}
+
+// ManagerHealthSnapshot 管理器健康快照
+type ManagerHealthSnapshot struct {
+	Running   bool
+	CheckedAt time.Time
+	Event     map[string]QueueListenerHealth
+	Delay     map[string]QueueListenerHealth
+	Timer     TimerListenerHealth
 }
 
 // NewManager 创建任务管理器
@@ -61,8 +94,10 @@ func NewManager(registry *Registry, opts ...Option) *Manager {
 		o(cfg)
 	}
 	return &Manager{
-		cfg:      cfg,
-		registry: registry,
+		cfg:         cfg,
+		registry:    registry,
+		eventBeatAt: make(map[string]time.Time),
+		delayBeatAt: make(map[string]time.Time),
 	}
 }
 
@@ -98,6 +133,13 @@ func (m *Manager) Start(ctx context.Context) error {
 	if m.cfg.Logger == nil {
 		return fmt.Errorf("taskx: logger is required, use WithLogger() to set")
 	}
+	if m.cfg.HealthInterval <= 0 {
+		m.cfg.HealthInterval = 5 * time.Second
+	}
+	if m.cfg.HealthBeatTimeout <= 0 {
+		m.cfg.HealthBeatTimeout = 15 * time.Second
+	}
+	m.cfg.OnHeartbeat = m.recordHeartbeat
 
 	// 检测驱动版本兼容性（如 BLMOVE 要求 Redis >= 6.2）
 	type versionChecker interface {
@@ -148,6 +190,8 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 
 	m.running = true
+	m.refreshHealthSnapshot(context.Background(), true)
+	m.startMonitorLocked()
 	m.cfg.Logger.Infof("taskx: manager started")
 	return nil
 }
@@ -165,6 +209,12 @@ func (m *Manager) Stop(ctx context.Context) error {
 		return nil
 	}
 
+	if m.monitorCancel != nil {
+		m.monitorCancel()
+		m.monitorCancel = nil
+	}
+	m.monitorWG.Wait()
+
 	if m.scheduler != nil {
 		stopCtx := m.scheduler.Stop()
 		<-stopCtx.Done()
@@ -172,8 +222,10 @@ func (m *Manager) Stop(ctx context.Context) error {
 	}
 
 	m.stopConsumersLocked()
+	m.cfg.OnHeartbeat = nil
 
 	m.running = false
+	m.refreshHealthSnapshot(context.Background(), false)
 	m.cfg.Logger.Infof("taskx: manager stopped")
 	return nil
 }
@@ -205,9 +257,133 @@ func (m *Manager) Registry() *Registry {
 	return m.registry
 }
 
+// HealthSnapshot 返回最近一次健康快照。
+func (m *Manager) HealthSnapshot() ManagerHealthSnapshot {
+	m.healthMu.RLock()
+	defer m.healthMu.RUnlock()
+
+	cp := ManagerHealthSnapshot{
+		Running:   m.healthSnapshot.Running,
+		CheckedAt: m.healthSnapshot.CheckedAt,
+		Event:     make(map[string]QueueListenerHealth, len(m.healthSnapshot.Event)),
+		Delay:     make(map[string]QueueListenerHealth, len(m.healthSnapshot.Delay)),
+		Timer:     m.healthSnapshot.Timer,
+	}
+	for k, v := range m.healthSnapshot.Event {
+		cp.Event[k] = v
+	}
+	for k, v := range m.healthSnapshot.Delay {
+		cp.Delay[k] = v
+	}
+	return cp
+}
+
 func (m *Manager) stopConsumersLocked() {
 	for _, c := range m.consumers {
 		c.Stop()
 	}
 	m.consumers = nil
+}
+
+func (m *Manager) recordHeartbeat(hb core.ListenerHeartbeat) {
+	beatAt := hb.At
+	if beatAt.IsZero() {
+		beatAt = time.Now()
+	}
+
+	m.healthMu.Lock()
+	defer m.healthMu.Unlock()
+	switch hb.Kind {
+	case core.ListenerKindEvent:
+		m.eventBeatAt[hb.Name] = beatAt
+	case core.ListenerKindDelay:
+		m.delayBeatAt[hb.Name] = beatAt
+	case core.ListenerKindTimer:
+		m.timerBeatAt = beatAt
+	}
+}
+
+func (m *Manager) startMonitorLocked() {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.monitorCancel = cancel
+	m.monitorWG.Add(1)
+	go func() {
+		defer m.monitorWG.Done()
+		ticker := time.NewTicker(m.cfg.HealthInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				m.refreshHealthSnapshot(ctx, true)
+			}
+		}
+	}()
+}
+
+func (m *Manager) refreshHealthSnapshot(ctx context.Context, running bool) {
+	now := time.Now()
+	eventEntries := m.registry.GetEventRunners()
+	delayEntries := m.registry.GetDelayRunners()
+
+	m.healthMu.RLock()
+	eventBeat := make(map[string]time.Time, len(m.eventBeatAt))
+	delayBeat := make(map[string]time.Time, len(m.delayBeatAt))
+	for k, v := range m.eventBeatAt {
+		eventBeat[k] = v
+	}
+	for k, v := range m.delayBeatAt {
+		delayBeat[k] = v
+	}
+	timerBeat := m.timerBeatAt
+	m.healthMu.RUnlock()
+
+	snap := ManagerHealthSnapshot{
+		Running:   running,
+		CheckedAt: now,
+		Event:     make(map[string]QueueListenerHealth, len(eventEntries)),
+		Delay:     make(map[string]QueueListenerHealth, len(delayEntries)),
+	}
+
+	for name := range eventEntries {
+		item := QueueListenerHealth{LastBeatAt: eventBeat[name]}
+		item.Alive = !item.LastBeatAt.IsZero() && now.Sub(item.LastBeatAt) <= m.cfg.HealthBeatTimeout
+		if m.cfg.EventDriver != nil {
+			lenCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			n, err := m.cfg.EventDriver.Len(lenCtx, fmt.Sprintf("%s:event:{%s}:pending", m.cfg.KeyPrefix, name))
+			cancel()
+			if err != nil {
+				item.LenError = err.Error()
+			} else {
+				item.PendingLen = n
+			}
+		}
+		snap.Event[name] = item
+	}
+
+	for name := range delayEntries {
+		item := QueueListenerHealth{LastBeatAt: delayBeat[name]}
+		item.Alive = !item.LastBeatAt.IsZero() && now.Sub(item.LastBeatAt) <= m.cfg.HealthBeatTimeout
+		if m.cfg.DelayDriver != nil {
+			lenCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			n, err := m.cfg.DelayDriver.Len(lenCtx, fmt.Sprintf("%s:delay:{%s}:pending", m.cfg.KeyPrefix, name))
+			cancel()
+			if err != nil {
+				item.LenError = err.Error()
+			} else {
+				item.PendingLen = n
+			}
+		}
+		snap.Delay[name] = item
+	}
+
+	snap.Timer = TimerListenerHealth{
+		LastBeatAt: timerBeat,
+		Alive:      !timerBeat.IsZero() && now.Sub(timerBeat) <= m.cfg.HealthBeatTimeout,
+	}
+
+	m.healthMu.Lock()
+	m.healthSnapshot = snap
+	m.healthMu.Unlock()
 }

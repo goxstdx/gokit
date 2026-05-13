@@ -221,6 +221,8 @@ Cron 触发 ──► 按并发策略生成锁 Key ──► 抢分布式锁 ─
 | `WithRecoverBatchSize(n)` | `1000` | 崩溃恢复每批次移动的消息数量 |
 | `WithDefaultTimerTaskOption(opt)` | `MaxRetry=0, ConcurrencyPolicy=forbid_overlap` | TimerTask 全局默认选项，单任务未显式指定时继承 |
 | `WithAlertFunc(f)` | `nil`（仅日志） | 异常告警回调，触发场景：消息格式损坏、EventQueue 返回 `NextTime`、重试耗尽进死信、定时任务全部失败 |
+| `WithHealthInterval(d)` | `5s` | 健康监控采样间隔，控制 `HealthSnapshot()` 刷新频率 |
+| `WithHealthBeatTimeout(d)` | `15s` | 心跳超时阈值，超过后对应监听器 `Alive=false` |
 
 ### TimerTaskOption
 
@@ -230,6 +232,36 @@ Cron 触发 ──► 按并发策略生成锁 Key ──► 抢分布式锁 ─
 | `ConcurrencyPolicy` | 继承全局，最终默认 `forbid_overlap` | `forbid_overlap` / `allow_overlap` |
 
 > 建议：关键任务默认使用 `forbid_overlap`；若业务确实允许跨轮次重叠执行，再显式配置为 `allow_overlap`，同时保证任务幂等。
+
+## 监听存活监控
+
+如果你只关心监听链路是否存活（不关心具体任务执行结果），可以使用 `HealthSnapshot()`：
+
+- Event/Delay：基于内部轮询/消费心跳判断 `Alive`，并采样 pending 长度
+- Timer：基于 cron 调度心跳判断 `Alive`
+
+```go
+mgr := taskx.NewRedisManager(
+    rdb, reg,
+    taskx.WithLogger(log),
+    taskx.WithHealthInterval(2*time.Second),
+    taskx.WithHealthBeatTimeout(10*time.Second),
+)
+
+if err := mgr.Start(ctx); err != nil {
+    panic(err)
+}
+defer mgr.Stop(context.Background())
+
+snap := mgr.HealthSnapshot()
+for name, st := range snap.Event {
+    log.Infof("event[%s]: alive=%v pending=%d err=%s", name, st.Alive, st.PendingLen, st.LenError)
+}
+for name, st := range snap.Delay {
+    log.Infof("delay[%s]: alive=%v pending=%d err=%s", name, st.Alive, st.PendingLen, st.LenError)
+}
+log.Infof("timer: alive=%v last_beat=%v", snap.Timer.Alive, snap.Timer.LastBeatAt)
+```
 
 ## Redis Key 命名规范
 

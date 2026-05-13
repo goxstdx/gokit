@@ -21,6 +21,7 @@ type Scheduler struct {
 	lockTTL time.Duration
 	logger  core.Logger
 	onAlert core.AlertFunc
+	onBeat  core.ListenerHeartbeatFunc
 
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -35,6 +36,7 @@ func NewScheduler(
 	lockTTL time.Duration,
 	logger core.Logger,
 	onAlert core.AlertFunc,
+	onBeat core.ListenerHeartbeatFunc,
 ) *Scheduler {
 	return &Scheduler{
 		cron:    cron.New(cron.WithSeconds(), cron.WithChain(cron.Recover(cronLogger{logger: logger}))),
@@ -44,6 +46,7 @@ func NewScheduler(
 		lockTTL: lockTTL,
 		logger:  logger,
 		onAlert: onAlert,
+		onBeat:  onBeat,
 	}
 }
 
@@ -57,6 +60,17 @@ func (s *Scheduler) alert(alertType core.AlertType, msg string) {
 			},
 		)
 	}
+}
+
+func (s *Scheduler) beat() {
+	if s.onBeat == nil {
+		return
+	}
+	s.onBeat(core.ListenerHeartbeat{
+		Kind: core.ListenerKindTimer,
+		Name: "cron",
+		At:   time.Now(),
+	})
 }
 
 // Register 注册一个定时任务。
@@ -91,6 +105,7 @@ func (s *Scheduler) Register(task core.TimerTaskRunner, opt core.TimerTaskOption
 }
 
 func (s *Scheduler) runTask(name string, task core.TimerTaskRunner, opt core.TimerTaskOption, scheduledAt time.Time) {
+	s.beat()
 	s.mu.Lock()
 	ctx := s.ctx
 	s.mu.Unlock()
@@ -225,7 +240,11 @@ func (s *Scheduler) Start() {
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.mu.Unlock()
 
+	if _, err := s.cron.AddFunc("@every 5s", func() { s.beat() }); err != nil {
+		s.logger.Warnf("taskx: timer heartbeat registration failed: %v", err)
+	}
 	s.cron.Start()
+	s.beat()
 	s.logger.Infof("taskx: timer scheduler started")
 }
 

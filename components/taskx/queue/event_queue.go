@@ -19,6 +19,7 @@ type EventConsumer struct {
 	prefix      string
 	logger      core.Logger
 	onAlert     core.AlertFunc
+	onHeartbeat core.ListenerHeartbeatFunc
 	lockTTL     time.Duration
 	procTimeout time.Duration
 
@@ -37,6 +38,7 @@ func NewEventConsumer(
 	procTimeout time.Duration,
 	logger core.Logger,
 	onAlert core.AlertFunc,
+	onHeartbeat core.ListenerHeartbeatFunc,
 ) *EventConsumer {
 	return &EventConsumer{
 		runner:      runner,
@@ -48,6 +50,7 @@ func NewEventConsumer(
 		procTimeout: procTimeout,
 		logger:      logger,
 		onAlert:     onAlert,
+		onHeartbeat: onHeartbeat,
 	}
 }
 
@@ -79,9 +82,21 @@ func (c *EventConsumer) alert(alertType core.AlertType, msg string) {
 	}
 }
 
+func (c *EventConsumer) beat() {
+	if c.onHeartbeat == nil {
+		return
+	}
+	c.onHeartbeat(core.ListenerHeartbeat{
+		Kind: core.ListenerKindEvent,
+		Name: c.runner.GetName(),
+		At:   time.Now(),
+	})
+}
+
 // Start 启动消费者
 func (c *EventConsumer) Start(ctx context.Context) error {
 	ctx, c.cancel = context.WithCancel(ctx)
+	c.beat()
 
 	// 启动消费协程
 	for i := 0; i < c.option.ConsumerCount; i++ {
@@ -180,6 +195,7 @@ func (c *EventConsumer) consume(ctx context.Context, id int) {
 			time.Sleep(time.Second)
 			continue
 		}
+		c.beat()
 		if raw == "" {
 			continue
 		}

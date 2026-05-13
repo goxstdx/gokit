@@ -23,6 +23,9 @@ type ManagerConfig struct {
 	DefaultTimerTask  core.TimerTaskOption
 	Logger            core.Logger
 	OnAlert           core.AlertFunc // 异常告警回调，nil 时仅记录日志
+	OnHeartbeat       core.ListenerHeartbeatFunc
+	HealthInterval    time.Duration
+	HealthBeatTimeout time.Duration
 }
 
 func defaultConfig() *ManagerConfig {
@@ -36,7 +39,9 @@ func defaultConfig() *ManagerConfig {
 			MaxRetry:          core.IntPtr(0),
 			ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencyForbidOverlap),
 		},
-		Logger: nil, // 调用方必须提供 Logger
+		Logger:            nil, // 调用方必须提供 Logger
+		HealthInterval:    5 * time.Second,
+		HealthBeatTimeout: 15 * time.Second,
 	}
 }
 
@@ -82,4 +87,14 @@ func WithLogger(l core.Logger) Option {
 
 func WithAlertFunc(f core.AlertFunc) Option {
 	return func(c *ManagerConfig) { c.OnAlert = f }
+}
+
+// WithHealthInterval 设置健康监控采样间隔
+func WithHealthInterval(d time.Duration) Option {
+	return func(c *ManagerConfig) { c.HealthInterval = d }
+}
+
+// WithHealthBeatTimeout 设置监听器心跳超时时间
+func WithHealthBeatTimeout(d time.Duration) Option {
+	return func(c *ManagerConfig) { c.HealthBeatTimeout = d }
 }

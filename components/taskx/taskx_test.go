@@ -885,3 +885,88 @@ func TestManagerRequiresLogger(t *testing.T) {
 	}
 	t.Logf("got expected error: %v", err)
 }
+
+// ============================================================
+// 测试：监听存活健康快照（event / delay / timer）
+// ============================================================
+func TestManagerHealthSnapshot(t *testing.T) {
+	rdb := newTestRedis()
+	skipIfNoRedis(t, rdb)
+	log := newTestLogger(t)
+
+	ctx := context.Background()
+	prefix := fmt.Sprintf("test_%d", time.Now().UnixNano())
+	defer cleanKeys(ctx, rdb, prefix)
+
+	eventRunner := newTestRunner(
+		"health-event", func(_ context.Context, _ string) core.RunnerFuncResult {
+			return core.RunnerFuncResult{IsOk: true}
+		},
+	)
+	delayRunner := newTestRunner(
+		"health-delay", func(_ context.Context, _ string) core.RunnerFuncResult {
+			return core.RunnerFuncResult{IsOk: true}
+		},
+	)
+	timerRunner := &testTimerRunner{name: "health-timer", cronExp: "*/1 * * * * *"}
+
+	reg := taskx.NewRegistry()
+	if err := reg.RegisterEventRunner(eventRunner, core.RunnerOption{ConsumerCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.RegisterDelayRunner(delayRunner, core.RunnerOption{ConsumerCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.RegisterTimerTask(timerRunner); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := taskx.NewRedisManager(
+		rdb, reg,
+		taskx.WithKeyPrefix(prefix),
+		taskx.WithLogger(log),
+		taskx.WithPollInterval(200*time.Millisecond),
+		taskx.WithHealthInterval(100*time.Millisecond),
+		taskx.WithHealthBeatTimeout(6*time.Second),
+	)
+
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// 推入一条未来执行的 delay 消息，验证 pending 长度采样。
+	if err := mgr.PublishDelay(ctx, &testRunner{name: "health-delay", payload: "future-job"}, time.Now().Add(30*time.Second).Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	var snap taskx.ManagerHealthSnapshot
+	ok := false
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		snap = mgr.HealthSnapshot()
+		eventState, hasEvent := snap.Event["health-event"]
+		delayState, hasDelay := snap.Delay["health-delay"]
+		if snap.Running &&
+			hasEvent && hasDelay &&
+			eventState.Alive && delayState.Alive &&
+			snap.Timer.Alive &&
+			delayState.PendingLen == 1 &&
+			eventState.LenError == "" && delayState.LenError == "" {
+			ok = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !ok {
+		t.Fatalf("unexpected health snapshot: %+v", snap)
+	}
+
+	if err := mgr.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	stopped := mgr.HealthSnapshot()
+	if stopped.Running {
+		t.Fatalf("expected running=false after stop, got %+v", stopped)
+	}
+}

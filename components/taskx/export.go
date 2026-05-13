@@ -47,7 +47,7 @@ func newEventConsumerFactory(
 ) consumer {
 	return queue.NewEventConsumer(
 		runner, opt, eq, lk,
-		cfg.KeyPrefix, cfg.LockTTL, cfg.ProcessingTimeout, cfg.Logger, cfg.OnAlert,
+		cfg.KeyPrefix, cfg.LockTTL, cfg.ProcessingTimeout, cfg.Logger, cfg.OnAlert, cfg.OnHeartbeat,
 	)
 }
 
@@ -58,12 +58,12 @@ func newDelayConsumerFactory(
 ) consumer {
 	return queue.NewDelayConsumer(
 		runner, opt, dq, lk,
-		cfg.KeyPrefix, cfg.LockTTL, cfg.PollInterval, cfg.ProcessingTimeout, cfg.Logger, cfg.OnAlert,
+		cfg.KeyPrefix, cfg.LockTTL, cfg.PollInterval, cfg.ProcessingTimeout, cfg.Logger, cfg.OnAlert, cfg.OnHeartbeat,
 	)
 }
 
 func newTimerSchedulerFactory(lk driver.LockDriver, prefix string, cfg *ManagerConfig) timerScheduler {
-	return timer.NewScheduler(lk, prefix, cfg.LockTTL, cfg.Logger, cfg.OnAlert)
+	return timer.NewScheduler(lk, prefix, cfg.LockTTL, cfg.Logger, cfg.OnAlert, cfg.OnHeartbeat)
 }
 
 // RecoverEventDead 从事件队列死信中恢复消息，重置重试计数。

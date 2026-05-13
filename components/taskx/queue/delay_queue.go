@@ -20,6 +20,7 @@ type DelayConsumer struct {
 	prefix       string
 	logger       core.Logger
 	onAlert      core.AlertFunc
+	onHeartbeat  core.ListenerHeartbeatFunc
 	lockTTL      time.Duration
 	pollInterval time.Duration
 	procTimeout  time.Duration
@@ -41,6 +42,7 @@ func NewDelayConsumer(
 	procTimeout time.Duration,
 	logger core.Logger,
 	onAlert core.AlertFunc,
+	onHeartbeat core.ListenerHeartbeatFunc,
 ) *DelayConsumer {
 	return &DelayConsumer{
 		runner:       runner,
@@ -53,6 +55,7 @@ func NewDelayConsumer(
 		procTimeout:  procTimeout,
 		logger:       logger,
 		onAlert:      onAlert,
+		onHeartbeat:  onHeartbeat,
 	}
 }
 
@@ -84,9 +87,21 @@ func (c *DelayConsumer) alert(alertType core.AlertType, msg string) {
 	}
 }
 
+func (c *DelayConsumer) beat() {
+	if c.onHeartbeat == nil {
+		return
+	}
+	c.onHeartbeat(core.ListenerHeartbeat{
+		Kind: core.ListenerKindDelay,
+		Name: c.runner.GetName(),
+		At:   time.Now(),
+	})
+}
+
 // Start 启动延迟队列消费器
 func (c *DelayConsumer) Start(ctx context.Context) error {
 	ctx, c.cancel = context.WithCancel(ctx)
+	c.beat()
 
 	c.taskCh = make(chan string, c.option.ConsumerCount*2)
 
@@ -208,6 +223,7 @@ func (c *DelayConsumer) poll(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			c.beat()
 			c.fetch(ctx)
 		}
 	}

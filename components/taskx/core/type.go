@@ -88,6 +88,25 @@ type AlertData struct {
 // 参数 alertType 为告警类型，msg 为详细描述。
 type AlertFunc func(AlertData)
 
+// ListenerKind 监听器类型
+type ListenerKind string
+
+const (
+	ListenerKindEvent ListenerKind = "event"
+	ListenerKindDelay ListenerKind = "delay"
+	ListenerKindTimer ListenerKind = "timer"
+)
+
+// ListenerHeartbeat 监听器心跳数据
+type ListenerHeartbeat struct {
+	Kind ListenerKind
+	Name string
+	At   time.Time
+}
+
+// ListenerHeartbeatFunc 监听器心跳回调
+type ListenerHeartbeatFunc func(ListenerHeartbeat)
+
 // AlertType 告警类型
 type AlertType string
 
