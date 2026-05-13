@@ -19,6 +19,7 @@ type DelayConsumer struct {
 	lock         driver.LockDriver
 	prefix       string
 	logger       core.Logger
+	onAlert      core.AlertFunc
 	lockTTL      time.Duration
 	pollInterval time.Duration
 	procTimeout  time.Duration
@@ -39,6 +40,7 @@ func NewDelayConsumer(
 	pollInterval time.Duration,
 	procTimeout time.Duration,
 	logger core.Logger,
+	onAlert core.AlertFunc,
 ) *DelayConsumer {
 	return &DelayConsumer{
 		runner:       runner,
@@ -50,6 +52,7 @@ func NewDelayConsumer(
 		pollInterval: pollInterval,
 		procTimeout:  procTimeout,
 		logger:       logger,
+		onAlert:      onAlert,
 	}
 }
 
@@ -67,6 +70,16 @@ func (c *DelayConsumer) deadKey() string {
 
 func (c *DelayConsumer) recoveryLockKey() string {
 	return fmt.Sprintf("%s:lock:recover:delay:{%s}", c.prefix, c.runner.GetName())
+}
+
+func (c *DelayConsumer) alert(alertType core.AlertType, msg string) {
+	if c.onAlert != nil {
+		c.onAlert(
+			core.AlertData{
+				core.AlertSourceDelay, alertType, msg,
+			},
+		)
+	}
 }
 
 // Start 启动延迟队列消费器
@@ -111,7 +124,10 @@ func (c *DelayConsumer) Stop() {
 		var drained int
 		for raw := range c.taskCh {
 			if drainCtx.Err() != nil {
-				c.logger.Warnf("taskx: delay[%s] drain timeout, remaining items stay in processing for crash recovery", c.runner.GetName())
+				c.logger.Warnf(
+					"taskx: delay[%s] drain timeout, remaining items stay in processing for crash recovery",
+					c.runner.GetName(),
+				)
 				break
 			}
 			if err := c.driver.Nack(drainCtx, c.processingKey(), c.pendingKey(), raw, time.Now().Unix()); err != nil {
@@ -146,9 +162,13 @@ func (c *DelayConsumer) startupRecover(ctx context.Context) {
 	if !ok {
 		return
 	}
-	defer func() { _ = c.lock.Unlock(ctx, lockKey) }()
+	defer func() { _ = c.lock.Unlock(context.Background(), lockKey) }()
 
-	c.logger.Infof("taskx: delay[%s] recovery waiting %v for in-flight messages to finish", c.runner.GetName(), c.procTimeout)
+	c.logger.Infof(
+		"taskx: delay[%s] recovery waiting %v for in-flight messages to finish",
+		c.runner.GetName(),
+		c.procTimeout,
+	)
 	select {
 	case <-ctx.Done():
 		return
@@ -188,6 +208,16 @@ func (c *DelayConsumer) poll(ctx context.Context) {
 	}
 }
 
+// fetch 从 pending ZSet 取出到期消息并投入 channel。
+//
+// 注意：TransferToProcessing 通过 Lua 脚本原子地将消息从 pending ZREM 并 ZADD 到 processing。
+// 如果此时 ctx 被取消（Stop 触发），已从 pending 移出但尚未投入 channel 的消息会留在
+// processing ZSet 中。这些消息不会丢失，会在下次启动时由崩溃恢复机制（startupRecover）
+// 移回 pending 重新消费。
+//
+// 后续优化方向：可考虑在 ctx 取消时，将 items 中尚未投入 channel 的消息立即 Nack 回
+// pending，减少依赖崩溃恢复的等待时间（默认 processingTimeout=5min）。但鉴于 Stop 本身
+// 低频且崩溃恢复已兜底，当前设计优先保证停止速度，避免阻塞 pod 销毁。
 func (c *DelayConsumer) fetch(ctx context.Context) {
 	now := time.Now().Unix()
 	batchSize := int64(c.option.ConsumerCount * 2)
@@ -233,6 +263,7 @@ func (c *DelayConsumer) process(ctx context.Context, raw string, id int) {
 	env, err := core.DecodeEnvelope(raw)
 	if err != nil {
 		c.logger.Errorf("taskx: delay[%s][%d] decode error: %v, raw: %s", c.runner.GetName(), id, err, raw)
+		c.alert(core.AlertCorruptMessage, fmt.Sprintf("delay[%s] decode failed: %v, raw: %s", c.runner.GetName(), err, raw))
 		if ackErr := c.driver.Ack(ctx, c.processingKey(), raw); ackErr != nil {
 			c.logger.Errorf("taskx: delay[%s][%d] ack(decode-err) failed: %v", c.runner.GetName(), id, ackErr)
 		}
@@ -251,8 +282,22 @@ func (c *DelayConsumer) process(ctx context.Context, raw string, id int) {
 	c.logger.Warnf("taskx: delay[%s][%d] run failed: %v", c.runner.GetName(), id, result.Err)
 	env.RetryCount++
 
-	if env.RetryCount >= *c.option.MaxRetry {
-		c.logger.Warnf("taskx: delay[%s][%d] max retry reached (%d), moving to dead letter", c.runner.GetName(), id, *c.option.MaxRetry)
+	if env.RetryCount > *c.option.MaxRetry {
+		c.logger.Warnf(
+			"taskx: delay[%s][%d] max retry reached (%d), moving to dead letter",
+			c.runner.GetName(),
+			id,
+			*c.option.MaxRetry,
+		)
+		c.alert(
+			core.AlertMaxRetryExhausted,
+			fmt.Sprintf(
+				"delay[%s] max retry exhausted (%d), envelope_id=%s",
+				c.runner.GetName(),
+				*c.option.MaxRetry,
+				env.ID,
+			),
+		)
 		if err := c.driver.MoveToDead(ctx, c.processingKey(), c.deadKey(), raw); err != nil {
 			c.logger.Errorf("taskx: delay[%s][%d] move-to-dead failed: %v", c.runner.GetName(), id, err)
 		}

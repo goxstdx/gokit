@@ -18,6 +18,7 @@ type EventConsumer struct {
 	lock        driver.LockDriver
 	prefix      string
 	logger      core.Logger
+	onAlert     core.AlertFunc
 	lockTTL     time.Duration
 	procTimeout time.Duration
 
@@ -35,6 +36,7 @@ func NewEventConsumer(
 	lockTTL time.Duration,
 	procTimeout time.Duration,
 	logger core.Logger,
+	onAlert core.AlertFunc,
 ) *EventConsumer {
 	return &EventConsumer{
 		runner:      runner,
@@ -45,6 +47,7 @@ func NewEventConsumer(
 		lockTTL:     lockTTL,
 		procTimeout: procTimeout,
 		logger:      logger,
+		onAlert:     onAlert,
 	}
 }
 
@@ -62,6 +65,16 @@ func (c *EventConsumer) deadKey() string {
 
 func (c *EventConsumer) recoveryLockKey() string {
 	return fmt.Sprintf("%s:lock:recover:event:{%s}", c.prefix, c.runner.GetName())
+}
+
+func (c *EventConsumer) alert(alertType core.AlertType, msg string) {
+	if c.onAlert != nil {
+		c.onAlert(
+			core.AlertData{
+				core.AlertSourceEvent, alertType, msg,
+			},
+		)
+	}
 }
 
 // Start 启动消费者
@@ -111,10 +124,14 @@ func (c *EventConsumer) startupRecover(ctx context.Context) {
 		// 其他实例已经在执行恢复
 		return
 	}
-	defer func() { _ = c.lock.Unlock(ctx, lockKey) }()
+	defer func() { _ = c.lock.Unlock(context.Background(), lockKey) }()
 
 	// 等待 processingTimeout，让正在处理中的消息有足够时间完成
-	c.logger.Infof("taskx: event[%s] recovery waiting %v for in-flight messages to finish", c.runner.GetName(), c.procTimeout)
+	c.logger.Infof(
+		"taskx: event[%s] recovery waiting %v for in-flight messages to finish",
+		c.runner.GetName(),
+		c.procTimeout,
+	)
 	select {
 	case <-ctx.Done():
 		return
@@ -170,6 +187,7 @@ func (c *EventConsumer) process(ctx context.Context, raw string, id int) {
 	env, err := core.DecodeEnvelope(raw)
 	if err != nil {
 		c.logger.Errorf("taskx: event[%s][%d] decode error: %v, raw: %s", c.runner.GetName(), id, err, raw)
+		c.alert(core.AlertCorruptMessage, fmt.Sprintf("event[%s] decode failed: %v, raw: %s", c.runner.GetName(), err, raw))
 		if ackErr := c.driver.Ack(ctx, c.processingKey(), raw); ackErr != nil {
 			c.logger.Errorf("taskx: event[%s][%d] ack(decode-err) failed: %v", c.runner.GetName(), id, ackErr)
 		}
@@ -188,8 +206,22 @@ func (c *EventConsumer) process(ctx context.Context, raw string, id int) {
 	c.logger.Warnf("taskx: event[%s][%d] run failed: %v", c.runner.GetName(), id, result.Err)
 	env.RetryCount++
 
-	if env.RetryCount >= *c.option.MaxRetry {
-		c.logger.Warnf("taskx: event[%s][%d] max retry reached (%d), moving to dead letter", c.runner.GetName(), id, *c.option.MaxRetry)
+	if env.RetryCount > *c.option.MaxRetry {
+		c.logger.Warnf(
+			"taskx: event[%s][%d] max retry reached (%d), moving to dead letter",
+			c.runner.GetName(),
+			id,
+			*c.option.MaxRetry,
+		)
+		c.alert(
+			core.AlertMaxRetryExhausted,
+			fmt.Sprintf(
+				"event[%s] max retry exhausted (%d), envelope_id=%s",
+				c.runner.GetName(),
+				*c.option.MaxRetry,
+				env.ID,
+			),
+		)
 		if err := c.driver.MoveToDead(ctx, c.processingKey(), c.deadKey(), raw); err != nil {
 			c.logger.Errorf("taskx: event[%s][%d] move-to-dead failed: %v", c.runner.GetName(), id, err)
 		}

@@ -20,13 +20,22 @@ type Scheduler struct {
 	prefix  string
 	lockTTL time.Duration
 	logger  core.Logger
+	onAlert core.AlertFunc
 
+	ctx     context.Context
+	cancel  context.CancelFunc
 	mu      sync.Mutex
 	entries []cron.EntryID
 }
 
 // NewScheduler 创建定时任务调度器
-func NewScheduler(lk driver.LockDriver, prefix string, lockTTL time.Duration, logger core.Logger) *Scheduler {
+func NewScheduler(
+	lk driver.LockDriver,
+	prefix string,
+	lockTTL time.Duration,
+	logger core.Logger,
+	onAlert core.AlertFunc,
+) *Scheduler {
 	return &Scheduler{
 		cron:    cron.New(cron.WithSeconds(), cron.WithChain(cron.Recover(cronLogger{logger: logger}))),
 		parser:  cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor),
@@ -34,6 +43,19 @@ func NewScheduler(lk driver.LockDriver, prefix string, lockTTL time.Duration, lo
 		prefix:  prefix,
 		lockTTL: lockTTL,
 		logger:  logger,
+		onAlert: onAlert,
+	}
+}
+
+func (s *Scheduler) alert(alertType core.AlertType, msg string) {
+	if s.onAlert != nil {
+		s.onAlert(
+			core.AlertData{
+				core.AlertSourceTimer,
+				alertType,
+				msg,
+			},
+		)
 	}
 }
 
@@ -69,7 +91,13 @@ func (s *Scheduler) Register(task core.TimerTaskRunner, opt core.TimerTaskOption
 }
 
 func (s *Scheduler) runTask(name string, task core.TimerTaskRunner, opt core.TimerTaskOption, scheduledAt time.Time) {
-	ctx := context.Background()
+	s.mu.Lock()
+	ctx := s.ctx
+	s.mu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	lockKey := s.lockKey(name, *opt.ConcurrencyPolicy, scheduledAt)
 
 	ok, err := s.lock.Lock(ctx, lockKey, s.lockTTL)
@@ -86,11 +114,15 @@ func (s *Scheduler) runTask(name string, task core.TimerTaskRunner, opt core.Tim
 	}
 	defer func() {
 		stopRenew()
-		_ = s.lock.Unlock(ctx, lockKey)
+		_ = s.lock.Unlock(context.Background(), lockKey)
 	}()
 
 	maxAttempts := 1 + *opt.MaxRetry
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			s.logger.Infof("taskx: timer[%s] cancelled, stopping retries", name)
+			return
+		}
 		result := task.Run(ctx)
 		if result.IsOk {
 			return
@@ -98,6 +130,7 @@ func (s *Scheduler) runTask(name string, task core.TimerTaskRunner, opt core.Tim
 		s.logger.Warnf("taskx: timer[%s] attempt %d/%d failed: %v", name, attempt+1, maxAttempts, result.Err)
 	}
 	s.logger.Errorf("taskx: timer[%s] all %d attempts failed", name, maxAttempts)
+	s.alert(core.AlertTimerAllAttemptsFailed, fmt.Sprintf("timer[%s] all %d attempts failed", name, maxAttempts))
 }
 
 func (s *Scheduler) startRenewLoop(lockKey string) func() {
@@ -127,7 +160,10 @@ func (s *Scheduler) startRenewLoop(lockKey string) func() {
 					continue
 				}
 				if !ok {
-					s.logger.Warnf("taskx: timer lock lost during execution, key=%s; duplicate execution may occur in multi-instance deployment", lockKey)
+					s.logger.Warnf(
+						"taskx: timer lock lost during execution, key=%s; duplicate execution may occur in multi-instance deployment",
+						lockKey,
+					)
 					return
 				}
 			}
@@ -185,15 +221,28 @@ func (j *timerJob) consumeScheduledTick(now time.Time) time.Time {
 
 // Start 启动定时任务调度器
 func (s *Scheduler) Start() {
+	s.mu.Lock()
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+	s.mu.Unlock()
+
 	s.cron.Start()
 	s.logger.Infof("taskx: timer scheduler started")
 }
 
-// Stop 停止定时任务调度器，等待运行中的任务完成
+// Stop 停止定时任务调度器，取消运行中任务的 context 并等待完成。
+// 注意：Stop 会先取消 ctx 通知运行中的任务退出，然后等待 cron 内所有 job 完成。
+// 如果 TimerTaskRunner.Run 实现中未检查 ctx.Done()，Stop 仍会阻塞直到任务自然结束。
+// 调用方应确保 TimerTaskRunner.Run 能响应 context 取消信号以实现快速退出。
 func (s *Scheduler) Stop() context.Context {
-	ctx := s.cron.Stop()
+	s.mu.Lock()
+	if s.cancel != nil {
+		s.cancel()
+	}
+	s.mu.Unlock()
+
+	cronCtx := s.cron.Stop()
 	s.logger.Infof("taskx: timer scheduler stopped")
-	return ctx
+	return cronCtx
 }
 
 type cronLogger struct {
@@ -201,7 +250,7 @@ type cronLogger struct {
 }
 
 func (l cronLogger) Info(msg string, keysAndValues ...interface{}) {
-	l.logger.Infof("taskx: cron: "+msg, keysAndValues...)
+	l.logger.Infof("taskx: cron: %s %v", msg, keysAndValues)
 }
 
 func (l cronLogger) Error(err error, msg string, keysAndValues ...interface{}) {

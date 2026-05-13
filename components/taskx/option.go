@@ -22,6 +22,7 @@ type ManagerConfig struct {
 	RecoverBatchSize  int64 // 崩溃恢复每批次移动的消息数量
 	DefaultTimerTask  core.TimerTaskOption
 	Logger            core.Logger
+	OnAlert           core.AlertFunc // 异常告警回调，nil 时仅记录日志
 }
 
 func defaultConfig() *ManagerConfig {
@@ -77,4 +78,8 @@ func WithDefaultTimerTaskOption(opt core.TimerTaskOption) Option {
 
 func WithLogger(l core.Logger) Option {
 	return func(c *ManagerConfig) { c.Logger = l }
+}
+
+func WithAlertFunc(f core.AlertFunc) Option {
+	return func(c *ManagerConfig) { c.OnAlert = f }
 }

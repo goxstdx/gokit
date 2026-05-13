@@ -14,11 +14,19 @@ var _ driver.DelayQueueDriver = (*DelayQueueProvider)(nil)
 
 // DelayQueueProvider 基于 Redis ZSet 的延迟队列驱动
 type DelayQueueProvider struct {
-	rdb redis.Cmdable
+	rdb          redis.Cmdable
+	recoverBatch int64
 }
 
 func NewDelayQueueProvider(rdb redis.Cmdable) *DelayQueueProvider {
-	return &DelayQueueProvider{rdb: rdb}
+	return &DelayQueueProvider{rdb: rdb, recoverBatch: 1000}
+}
+
+// SetRecoverBatchSize 设置崩溃恢复时每次 Lua 调用移动的消息数量
+func (p *DelayQueueProvider) SetRecoverBatchSize(n int64) {
+	if n > 0 {
+		p.recoverBatch = n
+	}
 }
 
 func (p *DelayQueueProvider) Add(ctx context.Context, queue string, data string, executeAt int64) error {
@@ -121,7 +129,7 @@ func (p *DelayQueueProvider) RecoverProcessing(ctx context.Context, processingQu
 	newScore := time.Now().Unix()
 	result, err := scriptDelayRecoverProcessing.Run(ctx, p.rdb,
 		[]string{processingQueue, pendingQueue},
-		fmt.Sprintf("%d", timeoutScore), newScore,
+		fmt.Sprintf("%d", timeoutScore), newScore, p.recoverBatch,
 	).Int64()
 	if err != nil && err != redis.Nil {
 		return 0, err

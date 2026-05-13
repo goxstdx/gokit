@@ -99,6 +99,10 @@ taskx:event:{runner_name}:dead         # 死信
 3. 超时后仍未处理完的消息保留在 processing 中，等待下次启动时的崩溃恢复机制兜底
 4. **TimerTask**：等待正在执行的定时任务完成后才返回
 
+> **关于 DelayQueue 停止时的消息安全**：`fetch` 中 Lua 脚本会原子地将到期消息从 pending 转移到 processing，然后逐条投入 channel。如果 Stop 在 Lua 执行完成后、消息投入 channel 前触发，这部分消息会留在 processing 中而非 channel 中，因此 drain 阶段无法 Nack 回去。这些消息不会丢失，会在下次启动时由崩溃恢复机制兜底。当前设计优先保证停止速度，避免长时间阻塞导致 K8s 等容器编排系统强制杀死 pod。
+>
+> **后续优化方向**：可考虑在 `fetch` 中 ctx 取消时，将已取出但未投入 channel 的消息立即 Nack 回 pending，减少对崩溃恢复的依赖（默认等待 `processingTimeout=5min`）。
+
 ### 5. Valkey / Redis Cluster 兼容
 
 所有 Redis key 使用 `{runner_name}` 作为 HashTag：
@@ -143,7 +147,7 @@ Producer                           Redis                              Consumer
    │                                 │               │                    │
    │                                 │         ┌─────┴─────┐              │
    │                                 │         ▼           ▼              │
-   │                                 │   < MaxRetry   >= MaxRetry        │
+   │                                 │   ≤ MaxRetry   > MaxRetry         │
    │                                 │    回 pending    进 dead           │
 ```
 
@@ -206,6 +210,7 @@ Cron 触发 ──► 按并发策略生成锁 Key ──► 抢分布式锁 ─
 | `WithProcessingTimeout(d)` | `5m` | processing 队列超时时间，用于崩溃恢复等待 |
 | `WithRecoverBatchSize(n)` | `1000` | 崩溃恢复每批次移动的消息数量 |
 | `WithDefaultTimerTaskOption(opt)` | `MaxRetry=0, ConcurrencyPolicy=forbid_overlap` | TimerTask 全局默认选项，单任务未显式指定时继承 |
+| `WithAlertFunc(f)` | `nil`（仅日志） | 异常告警回调，触发场景：消息格式损坏、重试耗尽进死信、定时任务全部失败 |
 
 ### TimerTaskOption
 

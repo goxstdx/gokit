@@ -152,7 +152,11 @@ func (m *Manager) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop 优雅停止所有队列和任务
+// Stop 优雅停止所有队列和任务。
+//
+// 当前实现会无限等待所有消费者和定时任务退出，传入的 ctx 未用于超时控制。
+// 在 K8s 等容器环境中，可依赖 terminationGracePeriodSeconds 作为兜底超时。
+// TODO: 后续可考虑监听 ctx.Done()，在超时后强制返回（残留消息由崩溃恢复兜底）。
 func (m *Manager) Stop(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -90,9 +90,9 @@ return moved
 `)
 
 // scriptDelayRecoverProcessing 恢复超时的 processing 到 pending（崩溃恢复）。
-// KEYS[1]=processing, KEYS[2]=pending, ARGV[1]=timeoutScore(即 now-timeout 的时间戳), ARGV[2]=newScore
+// KEYS[1]=processing, KEYS[2]=pending, ARGV[1]=timeoutScore(即 now-timeout 的时间戳), ARGV[2]=newScore, ARGV[3]=batchSize
 var scriptDelayRecoverProcessing = redis.NewScript(`
-local items = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+local items = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, tonumber(ARGV[3]))
 local moved = 0
 for _, v in ipairs(items) do
     redis.call('ZREM', KEYS[1], v)

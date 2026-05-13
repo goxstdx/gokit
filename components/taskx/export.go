@@ -2,6 +2,7 @@ package taskx
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -30,6 +31,7 @@ func NewRedisManager(rdb redis.Cmdable, registry *Registry, opts ...Option) *Man
 
 	// 将配置中的 RecoverBatchSize 传递给 Redis provider
 	ep.SetRecoverBatchSize(mgr.cfg.RecoverBatchSize)
+	dp.SetRecoverBatchSize(mgr.cfg.RecoverBatchSize)
 
 	mgr.SetEventConsumerFactory(newEventConsumerFactory)
 	mgr.SetDelayConsumerFactory(newDelayConsumerFactory)
@@ -45,7 +47,7 @@ func newEventConsumerFactory(
 ) consumer {
 	return queue.NewEventConsumer(
 		runner, opt, eq, lk,
-		cfg.KeyPrefix, cfg.LockTTL, cfg.ProcessingTimeout, cfg.Logger,
+		cfg.KeyPrefix, cfg.LockTTL, cfg.ProcessingTimeout, cfg.Logger, cfg.OnAlert,
 	)
 }
 
@@ -56,15 +58,16 @@ func newDelayConsumerFactory(
 ) consumer {
 	return queue.NewDelayConsumer(
 		runner, opt, dq, lk,
-		cfg.KeyPrefix, cfg.LockTTL, cfg.PollInterval, cfg.ProcessingTimeout, cfg.Logger,
+		cfg.KeyPrefix, cfg.LockTTL, cfg.PollInterval, cfg.ProcessingTimeout, cfg.Logger, cfg.OnAlert,
 	)
 }
 
 func newTimerSchedulerFactory(lk driver.LockDriver, prefix string, cfg *ManagerConfig) timerScheduler {
-	return timer.NewScheduler(lk, prefix, cfg.LockTTL, cfg.Logger)
+	return timer.NewScheduler(lk, prefix, cfg.LockTTL, cfg.Logger, cfg.OnAlert)
 }
 
-// RecoverEventDead 从事件队列死信中恢复消息，重置重试计数
+// RecoverEventDead 从事件队列死信中恢复消息，重置重试计数。
+// 格式损坏的消息会被跳过（已从 dead 中弹出但不推入 pending），并通过 OnAlert 通知调用方。
 func (m *Manager) RecoverEventDead(ctx context.Context, runnerName string, count int64) (int64, error) {
 	cfg := m.Config()
 	if cfg.EventDriver == nil {
@@ -72,10 +75,11 @@ func (m *Manager) RecoverEventDead(ctx context.Context, runnerName string, count
 	}
 	deadKey := cfg.KeyPrefix + ":event:{" + runnerName + "}:dead"
 	pendingKey := cfg.KeyPrefix + ":event:{" + runnerName + "}:pending"
-	return recoverEventDeadWithReset(ctx, cfg.EventDriver, deadKey, pendingKey, count)
+	return recoverEventDeadWithReset(ctx, cfg.EventDriver, deadKey, pendingKey, count, cfg.Logger, cfg.OnAlert)
 }
 
-// RecoverDelayDead 从延迟队列死信中恢复消息，重置重试计数
+// RecoverDelayDead 从延迟队列死信中恢复消息，重置重试计数。
+// 格式损坏的消息会被跳过（已从 dead 中弹出但不推入 pending），并通过 OnAlert 通知调用方。
 func (m *Manager) RecoverDelayDead(ctx context.Context, runnerName string, count int64) (int64, error) {
 	cfg := m.Config()
 	if cfg.DelayDriver == nil {
@@ -83,11 +87,18 @@ func (m *Manager) RecoverDelayDead(ctx context.Context, runnerName string, count
 	}
 	deadKey := cfg.KeyPrefix + ":delay:{" + runnerName + "}:dead"
 	pendingKey := cfg.KeyPrefix + ":delay:{" + runnerName + "}:pending"
-	return recoverDelayDeadWithReset(ctx, cfg.DelayDriver, deadKey, pendingKey, count)
+	return recoverDelayDeadWithReset(ctx, cfg.DelayDriver, deadKey, pendingKey, count, cfg.Logger, cfg.OnAlert)
 }
 
 // recoverEventDeadWithReset 逐条弹出死信、重置 RetryCount、推入 pending
-func recoverEventDeadWithReset(ctx context.Context, drv driver.EventQueueDriver, deadKey, pendingKey string, count int64) (int64, error) {
+func recoverEventDeadWithReset(
+	ctx context.Context,
+	drv driver.EventQueueDriver,
+	deadKey, pendingKey string,
+	count int64,
+	logger core.Logger,
+	onAlert core.AlertFunc,
+) (int64, error) {
 	var recovered int64
 	for recovered < count {
 		raw, err := drv.PopFromDead(ctx, deadKey)
@@ -99,10 +110,16 @@ func recoverEventDeadWithReset(ctx context.Context, drv driver.EventQueueDriver,
 		}
 		env, err := core.DecodeEnvelope(raw)
 		if err != nil {
-			if pushErr := drv.Push(ctx, pendingKey, raw); pushErr != nil {
-				return recovered, pushErr
+			logger.Warnf("taskx: recover event dead: skip corrupt message, raw: %s, err: %v", raw, err)
+			if onAlert != nil {
+				onAlert(
+					core.AlertData{
+						core.AlertSourceEvent,
+						core.AlertCorruptMessage,
+						fmt.Sprintf("recover event dead: corrupt message skipped, raw: %s", raw),
+					},
+				)
 			}
-			recovered++
 			continue
 		}
 		env.RetryCount = 0
@@ -115,7 +132,14 @@ func recoverEventDeadWithReset(ctx context.Context, drv driver.EventQueueDriver,
 }
 
 // recoverDelayDeadWithReset 逐条弹出死信、重置 RetryCount、推入 pending
-func recoverDelayDeadWithReset(ctx context.Context, drv driver.DelayQueueDriver, deadKey, pendingKey string, count int64) (int64, error) {
+func recoverDelayDeadWithReset(
+	ctx context.Context,
+	drv driver.DelayQueueDriver,
+	deadKey, pendingKey string,
+	count int64,
+	logger core.Logger,
+	onAlert core.AlertFunc,
+) (int64, error) {
 	var recovered int64
 	for recovered < count {
 		raw, err := drv.PopFromDead(ctx, deadKey)
@@ -127,10 +151,16 @@ func recoverDelayDeadWithReset(ctx context.Context, drv driver.DelayQueueDriver,
 		}
 		env, err := core.DecodeEnvelope(raw)
 		if err != nil {
-			if addErr := drv.Add(ctx, pendingKey, raw, time.Now().Unix()); addErr != nil {
-				return recovered, addErr
+			logger.Warnf("taskx: recover delay dead: skip corrupt message, raw: %s, err: %v", raw, err)
+			if onAlert != nil {
+				onAlert(
+					core.AlertData{
+						core.AlertSourceDelay,
+						core.AlertCorruptMessage,
+						fmt.Sprintf("recover delay dead: corrupt message skipped, raw: %s", raw),
+					},
+				)
 			}
-			recovered++
 			continue
 		}
 		env.RetryCount = 0

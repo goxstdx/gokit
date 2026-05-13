@@ -13,10 +13,19 @@ type TimerTaskOption = core.TimerTaskOption
 type TimerConcurrencyPolicy = core.TimerConcurrencyPolicy
 type Envelope = core.Envelope
 type Logger = core.Logger
+type AlertFunc = core.AlertFunc
+type AlertType = core.AlertType
+type AlertSource = core.AlertSource
 
 const (
 	TimerConcurrencyForbidOverlap = core.TimerConcurrencyForbidOverlap
 	TimerConcurrencyAllowOverlap  = core.TimerConcurrencyAllowOverlap
+)
+
+const (
+	AlertCorruptMessage         = core.AlertCorruptMessage
+	AlertMaxRetryExhausted      = core.AlertMaxRetryExhausted
+	AlertTimerAllAttemptsFailed = core.AlertTimerAllAttemptsFailed
 )
 
 var NewEnvelope = core.NewEnvelope
