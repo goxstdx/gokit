@@ -10,6 +10,7 @@ import (
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
 )
 
 // Scheduler 定时任务调度器
@@ -82,7 +83,7 @@ func (s *Scheduler) internalOpContext(parent context.Context) (context.Context, 
 	}
 	timeout := s.internalOpTimeout
 	if timeout <= 0 {
-		timeout = 3 * time.Second
+		timeout = defaults.InternalOpTimeout
 	}
 	return context.WithTimeout(parent, timeout)
 }
@@ -174,12 +175,12 @@ func (s *Scheduler) runTask(name string, task core.TimerTaskRunner, opt core.Tim
 }
 
 func (s *Scheduler) startRenewLoop(lockKey string) func() {
-	interval := s.lockTTL / 3
+	interval := s.lockTTL / defaults.LockRenewIntervalDivisor
 	if interval <= 0 {
-		interval = time.Second
+		interval = defaults.DefaultLockRenewInterval
 	}
-	if interval < 200*time.Millisecond {
-		interval = 200 * time.Millisecond
+	if interval < defaults.MinLockRenewInterval {
+		interval = defaults.MinLockRenewInterval
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -269,7 +270,7 @@ func (s *Scheduler) Start() {
 	s.mu.Unlock()
 
 	if heartbeatInterval <= 0 {
-		heartbeatInterval = 5 * time.Second
+		heartbeatInterval = defaults.TimerHeartbeatFallback
 	}
 	if _, err := s.cron.AddFunc("@every "+heartbeatInterval.String(), func() { s.beat() }); err != nil {
 		s.logger.Warnf("taskx: timer heartbeat registration failed: %v", err)

@@ -8,6 +8,7 @@ import (
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
 )
 
 // EventConsumer 事件队列消费管理器，为单个 Runner 管理 N 个消费协程
@@ -24,6 +25,7 @@ type EventConsumer struct {
 	lockTTL           time.Duration
 	procTimeout       time.Duration
 	internalOpTimeout time.Duration
+	popTimeout        time.Duration
 
 	wg     sync.WaitGroup
 	cancel context.CancelFunc
@@ -39,6 +41,7 @@ func NewEventConsumer(
 	lockTTL time.Duration,
 	procTimeout time.Duration,
 	internalOpTimeout time.Duration,
+	popTimeout time.Duration,
 	logger core.Logger,
 	onAlert core.AlertFunc,
 	onHeartbeat core.ListenerHeartbeatFunc,
@@ -53,6 +56,7 @@ func NewEventConsumer(
 		lockTTL:           lockTTL,
 		procTimeout:       procTimeout,
 		internalOpTimeout: internalOpTimeout,
+		popTimeout:        popTimeout,
 		logger:            logger,
 		onAlert:           onAlert,
 		onHeartbeat:       onHeartbeat,
@@ -99,14 +103,14 @@ func (c *EventConsumer) beat() {
 func (c *EventConsumer) internalOpContext() (context.Context, context.CancelFunc) {
 	timeout := c.internalOpTimeout
 	if timeout <= 0 {
-		timeout = 3 * time.Second
+		timeout = defaults.InternalOpTimeout
 	}
 	return context.WithTimeout(context.Background(), timeout)
 }
 
 func (c *EventConsumer) recoverMaxDuration(lockTTL time.Duration) time.Duration {
 	maxDuration := c.procTimeout + lockTTL
-	minDuration := lockTTL + 30*time.Second
+	minDuration := lockTTL + defaults.RecoveryLockMargin
 	if maxDuration < minDuration {
 		maxDuration = minDuration
 	}
@@ -151,7 +155,7 @@ func (c *EventConsumer) startupRecover(ctx context.Context) {
 
 	lockKey := c.recoveryLockKey()
 	// 锁 TTL 覆盖整个等待+恢复过程
-	lockTTL := c.procTimeout + 30*time.Second
+	lockTTL := c.procTimeout + defaults.RecoveryLockMargin
 	if c.lockTTL > lockTTL {
 		lockTTL = c.lockTTL
 	}
@@ -229,12 +233,12 @@ func (c *EventConsumer) startupRecover(ctx context.Context) {
 
 func (c *EventConsumer) startRecoverRenewLoop(lockKey string, lockTTL time.Duration) (func(), <-chan struct{}) {
 	lost := make(chan struct{})
-	interval := lockTTL / 3
+	interval := lockTTL / defaults.LockRenewIntervalDivisor
 	if interval <= 0 {
-		interval = time.Second
+		interval = defaults.DefaultLockRenewInterval
 	}
-	if interval < 200*time.Millisecond {
-		interval = 200 * time.Millisecond
+	if interval < defaults.MinLockRenewInterval {
+		interval = defaults.MinLockRenewInterval
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -292,13 +296,17 @@ func (c *EventConsumer) consume(ctx context.Context, id int) {
 		default:
 		}
 
-		raw, err := c.driver.PopToProcessing(ctx, c.pendingKey(), c.processingKey(), 3*time.Second)
+		popTimeout := c.popTimeout
+		if popTimeout <= 0 {
+			popTimeout = defaults.EventPopTimeout
+		}
+		raw, err := c.driver.PopToProcessing(ctx, c.pendingKey(), c.processingKey(), popTimeout)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
 			c.logger.Errorf("taskx: event[%s][%d] pop error: %v", c.runner.GetName(), id, err)
-			time.Sleep(time.Second)
+			time.Sleep(defaults.EventPopErrorBackoff)
 			continue
 		}
 		c.beat()

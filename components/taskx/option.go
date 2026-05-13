@@ -5,6 +5,7 @@ import (
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
 )
 
 // Option Manager 配置选项
@@ -17,6 +18,8 @@ type ManagerConfig struct {
 	LockDriver             driver.LockDriver
 	KeyPrefix              string
 	PollInterval           time.Duration
+	EventPopTimeout        time.Duration
+	DelayRetryBaseInterval time.Duration
 	LockTTL                time.Duration
 	InternalOpTimeout      time.Duration
 	TimerHeartbeatInterval time.Duration
@@ -35,12 +38,14 @@ type ManagerConfig struct {
 func defaultConfig() *ManagerConfig {
 	return &ManagerConfig{
 		KeyPrefix:              "taskx",
-		PollInterval:           time.Second,
-		LockTTL:                30 * time.Second,
-		InternalOpTimeout:      3 * time.Second,
+		PollInterval:           defaults.PollInterval,
+		EventPopTimeout:        defaults.EventPopTimeout,
+		DelayRetryBaseInterval: defaults.DelayRetryBaseInterval,
+		LockTTL:                defaults.LockTTL,
+		InternalOpTimeout:      defaults.InternalOpTimeout,
 		TimerHeartbeatInterval: 0,
-		ProcessingTimeout:      5 * time.Minute,
-		RecoverBatchSize:       1000,
+		ProcessingTimeout:      defaults.ProcessingTimeout,
+		RecoverBatchSize:       defaults.RecoverBatchSize,
 		DefaultTimerTask: core.TimerTaskOption{
 			MaxRetry:          core.IntPtr(0),
 			ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencyForbidOverlap),
@@ -48,8 +53,8 @@ func defaultConfig() *ManagerConfig {
 		Logger:            nil, // 调用方必须提供 Logger
 		AlertQueueSize:    1024,
 		TraceContextKey:   "taskx_trace_id",
-		HealthInterval:    5 * time.Second,
-		HealthBeatTimeout: 15 * time.Second,
+		HealthInterval:    defaults.HealthInterval,
+		HealthBeatTimeout: defaults.HealthBeatTimeout,
 	}
 }
 
@@ -71,6 +76,16 @@ func WithKeyPrefix(prefix string) Option {
 
 func WithPollInterval(d time.Duration) Option {
 	return func(c *ManagerConfig) { c.PollInterval = d }
+}
+
+// WithEventPopTimeout 设置 EventQueue BLMOVE 阻塞等待时长。
+func WithEventPopTimeout(d time.Duration) Option {
+	return func(c *ManagerConfig) { c.EventPopTimeout = d }
+}
+
+// WithDelayRetryBaseInterval 设置 DelayQueue 未显式返回 NextTime 时的线性重试基准间隔。
+func WithDelayRetryBaseInterval(d time.Duration) Option {
+	return func(c *ManagerConfig) { c.DelayRetryBaseInterval = d }
 }
 
 func WithLockTTL(ttl time.Duration) Option {

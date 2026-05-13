@@ -8,6 +8,7 @@ import (
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
 )
 
 // consumer 内部消费器接口
@@ -97,6 +98,9 @@ func NewManager(registry *Registry, opts ...Option) *Manager {
 	for _, o := range opts {
 		o(cfg)
 	}
+	if registry == nil {
+		registry = NewRegistry()
+	}
 	return &Manager{
 		cfg:         cfg,
 		registry:    registry,
@@ -138,10 +142,16 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("taskx: logger is required, use WithLogger() to set")
 	}
 	if m.cfg.HealthInterval <= 0 {
-		m.cfg.HealthInterval = 5 * time.Second
+		m.cfg.HealthInterval = defaults.HealthInterval
 	}
 	if m.cfg.HealthBeatTimeout <= 0 {
-		m.cfg.HealthBeatTimeout = 15 * time.Second
+		m.cfg.HealthBeatTimeout = defaults.HealthBeatTimeout
+	}
+	if m.cfg.EventPopTimeout <= 0 {
+		m.cfg.EventPopTimeout = defaults.EventPopTimeout
+	}
+	if m.cfg.DelayRetryBaseInterval <= 0 {
+		m.cfg.DelayRetryBaseInterval = defaults.DelayRetryBaseInterval
 	}
 	if m.cfg.TimerHeartbeatInterval <= 0 {
 		// 默认让 timer 心跳快于超时阈值，避免低阈值场景误报不健康。
@@ -150,17 +160,44 @@ func (m *Manager) Start(ctx context.Context) error {
 			m.cfg.TimerHeartbeatInterval = hb
 		}
 		if m.cfg.TimerHeartbeatInterval <= 0 {
-			m.cfg.TimerHeartbeatInterval = 5 * time.Second
+			m.cfg.TimerHeartbeatInterval = defaults.TimerHeartbeatFallback
 		}
-		if m.cfg.TimerHeartbeatInterval < time.Second {
-			m.cfg.TimerHeartbeatInterval = time.Second
+		if m.cfg.TimerHeartbeatInterval < defaults.MinTimerHeartbeat {
+			m.cfg.TimerHeartbeatInterval = defaults.MinTimerHeartbeat
 		}
 	}
 	if m.cfg.AlertQueueSize <= 0 {
 		m.cfg.AlertQueueSize = 1024
 	}
 	m.cfg.OnHeartbeat = m.recordHeartbeat
-	m.startAlertDispatcherLocked()
+
+	eventEntries := m.registry.GetEventRunners()
+	delayEntries := m.registry.GetDelayRunners()
+	timerEntries := m.registry.GetTimerTasks()
+	if len(eventEntries) > 0 {
+		if m.cfg.EventDriver == nil {
+			return fmt.Errorf("taskx: event queue driver not configured for %d registered event runner(s)", len(eventEntries))
+		}
+		if m.eventFactory == nil {
+			return fmt.Errorf("taskx: event consumer factory not configured for %d registered event runner(s)", len(eventEntries))
+		}
+	}
+	if len(delayEntries) > 0 {
+		if m.cfg.DelayDriver == nil {
+			return fmt.Errorf("taskx: delay queue driver not configured for %d registered delay runner(s)", len(delayEntries))
+		}
+		if m.delayFactory == nil {
+			return fmt.Errorf("taskx: delay consumer factory not configured for %d registered delay runner(s)", len(delayEntries))
+		}
+	}
+	if len(timerEntries) > 0 {
+		if m.cfg.LockDriver == nil {
+			return fmt.Errorf("taskx: lock driver not configured for %d registered timer task(s)", len(timerEntries))
+		}
+		if m.timerFactory == nil {
+			return fmt.Errorf("taskx: timer scheduler factory not configured for %d registered timer task(s)", len(timerEntries))
+		}
+	}
 
 	// 检测驱动版本兼容性（如 BLMOVE 要求 Redis >= 6.2）
 	type versionChecker interface {
@@ -171,13 +208,19 @@ func (m *Manager) Start(ctx context.Context) error {
 			return err
 		}
 	}
+	m.startAlertDispatcherLocked()
+	startSucceeded := false
+	defer func() {
+		if !startSucceeded {
+			m.cleanupStartFailureLocked()
+		}
+	}()
 
 	// 启动 EventQueue 消费者
 	if m.cfg.EventDriver != nil && m.eventFactory != nil {
-		for _, entry := range m.registry.GetEventRunners() {
+		for _, entry := range eventEntries {
 			c := m.eventFactory(entry.Runner, entry.Option, m.cfg.EventDriver, m.cfg.LockDriver, m.cfg)
 			if err := c.Start(ctx); err != nil {
-				m.stopConsumersLocked()
 				return fmt.Errorf("taskx: start event[%s]: %w", entry.Runner.GetName(), err)
 			}
 			m.consumers = append(m.consumers, c)
@@ -186,10 +229,9 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	// 启动 DelayQueue 消费者
 	if m.cfg.DelayDriver != nil && m.delayFactory != nil {
-		for _, entry := range m.registry.GetDelayRunners() {
+		for _, entry := range delayEntries {
 			c := m.delayFactory(entry.Runner, entry.Option, m.cfg.DelayDriver, m.cfg.LockDriver, m.cfg)
 			if err := c.Start(ctx); err != nil {
-				m.stopConsumersLocked()
 				return fmt.Errorf("taskx: start delay[%s]: %w", entry.Runner.GetName(), err)
 			}
 			m.consumers = append(m.consumers, c)
@@ -199,10 +241,9 @@ func (m *Manager) Start(ctx context.Context) error {
 	// 启动 TimerTask
 	if m.cfg.LockDriver != nil && m.timerFactory != nil {
 		s := m.timerFactory(m.cfg.LockDriver, m.cfg.KeyPrefix, m.cfg)
-		for _, entry := range m.registry.GetTimerTasks() {
+		for _, entry := range timerEntries {
 			opt := entry.Option.WithDefaults(m.cfg.DefaultTimerTask)
 			if err := s.Register(entry.Task, opt); err != nil {
-				m.stopConsumersLocked()
 				return fmt.Errorf("taskx: register timer[%s]: %w", entry.Task.GetName(), err)
 			}
 		}
@@ -216,6 +257,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	snapCancel()
 	m.startMonitorLocked()
 	m.cfg.Logger.Infof("taskx: manager started")
+	startSucceeded = true
 	return nil
 }
 
@@ -333,8 +375,8 @@ func (m *Manager) PublishDelayEnvelope(ctx context.Context, runnerName string, e
 	if env == nil {
 		return nil, fmt.Errorf("taskx: envelope is nil")
 	}
-	if executeAt <= time.Now().Unix() {
-		return nil, fmt.Errorf("taskx: invalid executeAt=%d, must be greater than current unix time", executeAt)
+	if executeAt <= 0 {
+		return nil, fmt.Errorf("taskx: invalid executeAt=%d, must be a positive unix time", executeAt)
 	}
 	env.Source = core.EnvelopeSourceDelay
 	key := fmt.Sprintf("%s:delay:{%s}:pending", m.cfg.KeyPrefix, runnerName)
@@ -407,6 +449,18 @@ func (m *Manager) stopConsumersLocked() {
 		c.Stop()
 	}
 	m.consumers = nil
+}
+
+func (m *Manager) cleanupStartFailureLocked() {
+	if m.scheduler != nil {
+		stopCtx := m.scheduler.Stop()
+		<-stopCtx.Done()
+		m.scheduler = nil
+	}
+	m.stopConsumersLocked()
+	m.stopAlertDispatcherLocked()
+	m.cfg.OnHeartbeat = nil
+	m.running = false
 }
 
 func (m *Manager) stopConsumersWithContextLocked(ctx context.Context) error {
@@ -485,7 +539,7 @@ func (m *Manager) refreshHealthSnapshot(ctx context.Context, running bool) {
 		item := QueueListenerHealth{LastBeatAt: eventBeat[name]}
 		item.Alive = !item.LastBeatAt.IsZero() && now.Sub(item.LastBeatAt) <= m.cfg.HealthBeatTimeout
 		if m.cfg.EventDriver != nil {
-			lenCtx, cancel := m.internalOpContext(ctx, 2*time.Second)
+			lenCtx, cancel := m.internalOpContext(ctx, defaults.HealthLenTimeout)
 			n, err := m.cfg.EventDriver.Len(lenCtx, fmt.Sprintf("%s:event:{%s}:pending", m.cfg.KeyPrefix, name))
 			cancel()
 			if err != nil {
@@ -501,7 +555,7 @@ func (m *Manager) refreshHealthSnapshot(ctx context.Context, running bool) {
 		item := QueueListenerHealth{LastBeatAt: delayBeat[name]}
 		item.Alive = !item.LastBeatAt.IsZero() && now.Sub(item.LastBeatAt) <= m.cfg.HealthBeatTimeout
 		if m.cfg.DelayDriver != nil {
-			lenCtx, cancel := m.internalOpContext(ctx, 2*time.Second)
+			lenCtx, cancel := m.internalOpContext(ctx, defaults.HealthLenTimeout)
 			n, err := m.cfg.DelayDriver.Len(lenCtx, fmt.Sprintf("%s:delay:{%s}:pending", m.cfg.KeyPrefix, name))
 			cancel()
 			if err != nil {
@@ -678,7 +732,7 @@ func (m *Manager) internalOpContext(parent context.Context, timeout time.Duratio
 		timeout = m.cfg.InternalOpTimeout
 	}
 	if timeout <= 0 {
-		timeout = 3 * time.Second
+		timeout = defaults.InternalOpTimeout
 	}
 	return context.WithTimeout(parent, timeout)
 }

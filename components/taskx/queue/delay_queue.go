@@ -8,6 +8,7 @@ import (
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
 )
 
 // DelayConsumer 延迟队列消费管理器
@@ -26,6 +27,7 @@ type DelayConsumer struct {
 	pollInterval      time.Duration
 	procTimeout       time.Duration
 	internalOpTimeout time.Duration
+	retryBaseInterval time.Duration
 
 	taskCh chan string
 	wg     sync.WaitGroup
@@ -43,6 +45,7 @@ func NewDelayConsumer(
 	pollInterval time.Duration,
 	procTimeout time.Duration,
 	internalOpTimeout time.Duration,
+	retryBaseInterval time.Duration,
 	logger core.Logger,
 	onAlert core.AlertFunc,
 	onHeartbeat core.ListenerHeartbeatFunc,
@@ -58,6 +61,7 @@ func NewDelayConsumer(
 		pollInterval:      pollInterval,
 		procTimeout:       procTimeout,
 		internalOpTimeout: internalOpTimeout,
+		retryBaseInterval: retryBaseInterval,
 		logger:            logger,
 		onAlert:           onAlert,
 		onHeartbeat:       onHeartbeat,
@@ -104,7 +108,7 @@ func (c *DelayConsumer) beat() {
 func (c *DelayConsumer) internalOpContext() (context.Context, context.CancelFunc) {
 	timeout := c.internalOpTimeout
 	if timeout <= 0 {
-		timeout = 3 * time.Second
+		timeout = defaults.InternalOpTimeout
 	}
 	return context.WithTimeout(context.Background(), timeout)
 }
@@ -118,7 +122,7 @@ func (c *DelayConsumer) internalOpContextWithTimeout(timeout time.Duration) (con
 
 func (c *DelayConsumer) recoverMaxDuration(lockTTL time.Duration) time.Duration {
 	maxDuration := c.procTimeout + lockTTL
-	minDuration := lockTTL + 30*time.Second
+	minDuration := lockTTL + defaults.RecoveryLockMargin
 	if maxDuration < minDuration {
 		maxDuration = minDuration
 	}
@@ -163,7 +167,7 @@ func (c *DelayConsumer) Stop() {
 		close(c.taskCh)
 		// 1 秒内尽量将 channel 中残留的消息 Nack 回 pending，
 		// 超时后剩余消息留在 processing ZSet，由下次启动的崩溃恢复流程兜底。
-		drainCtx, drainCancel := c.internalOpContextWithTimeout(time.Second)
+		drainCtx, drainCancel := c.internalOpContextWithTimeout(defaults.DelayDrainTimeout)
 		defer drainCancel()
 		var drained int
 		for raw := range c.taskCh {
@@ -197,7 +201,7 @@ func (c *DelayConsumer) startupRecover(ctx context.Context) {
 	}
 
 	lockKey := c.recoveryLockKey()
-	lockTTL := c.procTimeout + 30*time.Second
+	lockTTL := c.procTimeout + defaults.RecoveryLockMargin
 	if c.lockTTL > lockTTL {
 		lockTTL = c.lockTTL
 	}
@@ -272,12 +276,12 @@ func (c *DelayConsumer) startupRecover(ctx context.Context) {
 
 func (c *DelayConsumer) startRecoverRenewLoop(lockKey string, lockTTL time.Duration) (func(), <-chan struct{}) {
 	lost := make(chan struct{})
-	interval := lockTTL / 3
+	interval := lockTTL / defaults.LockRenewIntervalDivisor
 	if interval <= 0 {
-		interval = time.Second
+		interval = defaults.DefaultLockRenewInterval
 	}
-	if interval < 200*time.Millisecond {
-		interval = 200 * time.Millisecond
+	if interval < defaults.MinLockRenewInterval {
+		interval = defaults.MinLockRenewInterval
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -469,7 +473,19 @@ func (c *DelayConsumer) process(ctx context.Context, raw string, id int) {
 				c.runner.GetName(), id, result.NextTime,
 			)
 		}
-		nextTime = now + int64(env.RetryCount*5)
+		retryBase := c.retryBaseInterval
+		if retryBase <= 0 {
+			retryBase = defaults.DelayRetryBaseInterval
+		}
+		retryDelay := time.Duration(env.RetryCount) * retryBase
+		retrySeconds := int64(retryDelay / time.Second)
+		if retryDelay%time.Second != 0 {
+			retrySeconds++
+		}
+		if retrySeconds < 1 {
+			retrySeconds = 1
+		}
+		nextTime = now + retrySeconds
 	}
 	opCtx, opCancel := c.internalOpContext()
 	defer opCancel()

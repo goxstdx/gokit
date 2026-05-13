@@ -47,7 +47,7 @@ func newEventConsumerFactory(
 ) consumer {
 	return queue.NewEventConsumer(
 		runner, opt, eq, lk,
-		cfg.KeyPrefix, cfg.LockTTL, cfg.ProcessingTimeout, cfg.InternalOpTimeout, cfg.Logger, cfg.OnAlert, cfg.OnHeartbeat, cfg.TraceContextKey,
+		cfg.KeyPrefix, cfg.LockTTL, cfg.ProcessingTimeout, cfg.InternalOpTimeout, cfg.EventPopTimeout, cfg.Logger, cfg.OnAlert, cfg.OnHeartbeat, cfg.TraceContextKey,
 	)
 }
 
@@ -58,7 +58,7 @@ func newDelayConsumerFactory(
 ) consumer {
 	return queue.NewDelayConsumer(
 		runner, opt, dq, lk,
-		cfg.KeyPrefix, cfg.LockTTL, cfg.PollInterval, cfg.ProcessingTimeout, cfg.InternalOpTimeout, cfg.Logger, cfg.OnAlert, cfg.OnHeartbeat, cfg.TraceContextKey,
+		cfg.KeyPrefix, cfg.LockTTL, cfg.PollInterval, cfg.ProcessingTimeout, cfg.InternalOpTimeout, cfg.DelayRetryBaseInterval, cfg.Logger, cfg.OnAlert, cfg.OnHeartbeat, cfg.TraceContextKey,
 	)
 }
 
