@@ -68,6 +68,9 @@ func newTimerSchedulerFactory(lk driver.LockDriver, prefix string, cfg *ManagerC
 
 // RecoverEventDead 从事件队列死信中恢复消息，重置重试计数。
 // 格式损坏的消息会被跳过（已从 dead 中弹出但不推入 pending），并通过 OnAlert 通知调用方。
+// 当前实现为 best-effort：先从 dead 弹出，再重置 RetryCount 后推回 pending。
+// 若弹出后进程退出、ctx 超时或 Redis 写 pending 失败，该条消息可能无法自动恢复。
+// 后续可按可靠性要求选择：不弹出先复制、Lua 原子恢复但不重写 envelope、或引入 recovering 中间队列。
 func (m *Manager) RecoverEventDead(ctx context.Context, runnerName string, count int64) (int64, error) {
 	cfg := m.Config()
 	if cfg.EventDriver == nil {
@@ -80,6 +83,9 @@ func (m *Manager) RecoverEventDead(ctx context.Context, runnerName string, count
 
 // RecoverDelayDead 从延迟队列死信中恢复消息，重置重试计数。
 // 格式损坏的消息会被跳过（已从 dead 中弹出但不推入 pending），并通过 OnAlert 通知调用方。
+// 当前实现为 best-effort：先从 dead 弹出，再重置 RetryCount 后推回 pending。
+// 若弹出后进程退出、ctx 超时或 Redis 写 pending 失败，该条消息可能无法自动恢复。
+// 后续可按可靠性要求选择：不弹出先复制、Lua 原子恢复但不重写 envelope、或引入 recovering 中间队列。
 func (m *Manager) RecoverDelayDead(ctx context.Context, runnerName string, count int64) (int64, error) {
 	cfg := m.Config()
 	if cfg.DelayDriver == nil {
@@ -114,9 +120,9 @@ func recoverEventDeadWithReset(
 			if onAlert != nil {
 				onAlert(
 					core.AlertData{
-						core.AlertSourceEvent,
-						core.AlertCorruptMessage,
-						fmt.Sprintf("recover event dead: corrupt message skipped, raw: %s", raw),
+						Source:    core.AlertSourceEvent,
+						AlertType: core.AlertCorruptMessage,
+						Msg:       fmt.Sprintf("recover event dead: corrupt message skipped, raw: %s", raw),
 					},
 				)
 			}
@@ -155,9 +161,9 @@ func recoverDelayDeadWithReset(
 			if onAlert != nil {
 				onAlert(
 					core.AlertData{
-						core.AlertSourceDelay,
-						core.AlertCorruptMessage,
-						fmt.Sprintf("recover delay dead: corrupt message skipped, raw: %s", raw),
+						Source:    core.AlertSourceDelay,
+						AlertType: core.AlertCorruptMessage,
+						Msg:       fmt.Sprintf("recover delay dead: corrupt message skipped, raw: %s", raw),
 					},
 				)
 			}

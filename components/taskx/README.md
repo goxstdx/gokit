@@ -58,7 +58,7 @@ taskx:event:{runner_name}:dead         # 死信
 - **pending → processing**：消费者取出消息时通过 `BLMOVE`（Redis 6.2+）原子转移，确保消息不丢
 - **processing → 删除**：执行成功后 Ack
 - **processing → pending**：执行失败但未超重试上限，通过 Lua 脚本原子完成"删旧值 + 入新值"
-- **processing → dead**：超过 `MaxRetry` 进入死信队列
+- **processing → dead**：超过 `MaxRetry` 进入死信队列；`MaxRetry` 表示额外重试次数，总尝试次数为 `1 + MaxRetry`
 - **dead → pending**：通过 `RecoverEventDead` / `RecoverDelayDead` 手动恢复，恢复时自动重置重试计数
 
 ### 3. 消息信封（Envelope）
@@ -76,7 +76,9 @@ taskx:event:{runner_name}:dead         # 死信
 
 `id` 为 UUID，保证 DelayQueue ZSet 中每条消息的 member 唯一，避免相同 payload 被去重。
 
-重试时 `retry_count` 递增，达到 `MaxRetry` 后进入死信。死信恢复时 `retry_count` 重置为 0。
+重试时 `retry_count` 递增，超过 `MaxRetry` 后进入死信。死信恢复时 `retry_count` 重置为 0。
+
+> **损坏消息处理策略**：如果消费阶段无法解析 Envelope，说明消息信封已经损坏，重复投递大概率仍无法修复，并可能形成 poison message 无限循环。框架会触发 `OnAlert(AlertCorruptMessage)` 后 Ack 删除该消息，不再进入重试或死信；调用方应通过告警排查生产端或历史脏数据。死信恢复时遇到损坏 Envelope 也会触发告警并跳过。
 
 ### 4. 崩溃恢复
 
@@ -86,9 +88,11 @@ taskx:event:{runner_name}:dead         # 死信
 抢分布式锁 → 等待 processingTimeout → 将 processing 残留消息移回 pending → 释放锁 → 退出
 ```
 
-- **等待 processingTimeout**：给活跃的消费者足够时间处理完，避免误恢复正在执行的消息
+- **等待 processingTimeout**：给活跃的消费者足够时间处理完，降低误恢复正在执行消息的概率
 - **分布式锁**：多机启动时只有一台执行恢复
-- 等待结束后 processing 中还残留的消息一定是崩溃遗留的，可以安全恢复
+- 等待结束后，processing 中还残留的消息会被视为可恢复消息并移回 pending；如果业务处理时间超过 `processingTimeout`，可能发生重复投递，业务侧需保持幂等或调大该配置
+
+> **后续优化方向**：EventQueue 可考虑将 processing 改为带时间戳结构；DelayQueue 可考虑处理期间刷新租约/score；也可以增加实例心跳辅助判断，减少长任务被误恢复的概率。
 
 ### 4.1 优雅停止
 
@@ -102,6 +106,10 @@ taskx:event:{runner_name}:dead         # 死信
 > **关于 DelayQueue 停止时的消息安全**：`fetch` 中 Lua 脚本会原子地将到期消息从 pending 转移到 processing，然后逐条投入 channel。如果 Stop 在 Lua 执行完成后、消息投入 channel 前触发，这部分消息会留在 processing 中而非 channel 中，因此 drain 阶段无法 Nack 回去。这些消息不会丢失，会在下次启动时由崩溃恢复机制兜底。当前设计优先保证停止速度，避免长时间阻塞导致 K8s 等容器编排系统强制杀死 pod。
 >
 > **后续优化方向**：可考虑在 `fetch` 中 ctx 取消时，将已取出但未投入 channel 的消息立即 Nack 回 pending，减少对崩溃恢复的依赖（默认等待 `processingTimeout=5min`）。
+
+### 4.2 死信恢复边界
+
+`RecoverEventDead` / `RecoverDelayDead` 当前是 best-effort 恢复：先从 dead 中弹出消息，在 Go 侧重置 `retry_count` 后写回 pending。如果弹出后进程退出、context 超时或 Redis 写 pending 失败，该条消息可能无法自动恢复。这个取舍保留了“恢复时重置重试计数”的语义；后续如果需要更强可靠性，可考虑“不弹出先复制”、Lua 原子恢复但不重写 Envelope，或引入 `recovering` 中间队列。
 
 ### 5. Valkey / Redis Cluster 兼容
 
@@ -150,6 +158,8 @@ Producer                           Redis                              Consumer
    │                                 │   ≤ MaxRetry   > MaxRetry         │
    │                                 │    回 pending    进 dead           │
 ```
+
+如果 EventQueue 的 `Run()` 返回 `NextTime > 0`，框架不会自动转投 DelayQueue；它会触发 `OnAlert(AlertEventNextTimeIgnored)`，随后仍按 EventQueue 的即时重试语义回到 pending。若需要指定下次执行时间，请使用 DelayQueue。
 
 ### DelayQueue
 
@@ -203,14 +213,14 @@ Cron 触发 ──► 按并发策略生成锁 Key ──► 抢分布式锁 ─
 
 | Option | 默认值 | 说明 |
 |--------|--------|------|
-| `WithKeyPrefix(s)` | `"taskx"` | Redis key 前缀（会作为 HashTag 的一部分） |
+| `WithKeyPrefix(s)` | `"taskx"` | Redis key 前缀；HashTag 仍只使用 `{runner_name}` |
 | `WithLogger(l)` | 无（必填） | `logger_factory.Logger` 实例 |
 | `WithPollInterval(d)` | `1s` | DelayQueue 轮询间隔 |
 | `WithLockTTL(d)` | `30s` | 分布式锁默认 TTL |
 | `WithProcessingTimeout(d)` | `5m` | processing 队列超时时间，用于崩溃恢复等待 |
 | `WithRecoverBatchSize(n)` | `1000` | 崩溃恢复每批次移动的消息数量 |
 | `WithDefaultTimerTaskOption(opt)` | `MaxRetry=0, ConcurrencyPolicy=forbid_overlap` | TimerTask 全局默认选项，单任务未显式指定时继承 |
-| `WithAlertFunc(f)` | `nil`（仅日志） | 异常告警回调，触发场景：消息格式损坏、重试耗尽进死信、定时任务全部失败 |
+| `WithAlertFunc(f)` | `nil`（仅日志） | 异常告警回调，触发场景：消息格式损坏、EventQueue 返回 `NextTime`、重试耗尽进死信、定时任务全部失败 |
 
 ### TimerTaskOption
 

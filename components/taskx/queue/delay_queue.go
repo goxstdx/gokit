@@ -76,7 +76,9 @@ func (c *DelayConsumer) alert(alertType core.AlertType, msg string) {
 	if c.onAlert != nil {
 		c.onAlert(
 			core.AlertData{
-				core.AlertSourceDelay, alertType, msg,
+				Source:    core.AlertSourceDelay,
+				AlertType: alertType,
+				Msg:       msg,
 			},
 		)
 	}
@@ -175,6 +177,9 @@ func (c *DelayConsumer) startupRecover(ctx context.Context) {
 	case <-time.After(c.procTimeout):
 	}
 
+	// DelayQueue 的 processing 使用 ZSet score 记录进入 processing 的时间；这里只恢复超过
+	// processingTimeout 的消息。若业务处理耗时超过该值，仍可能发生重复投递，业务侧需保持幂等。
+	// 后续优化可考虑：处理期间刷新租约/score，或按任务维度配置更合适的 processingTimeout。
 	var totalRecovered int64
 	for {
 		recovered, err := c.driver.RecoverProcessing(ctx, c.processingKey(), c.pendingKey(), c.procTimeout)
@@ -262,6 +267,8 @@ func (c *DelayConsumer) work(ctx context.Context, id int) {
 func (c *DelayConsumer) process(ctx context.Context, raw string, id int) {
 	env, err := core.DecodeEnvelope(raw)
 	if err != nil {
+		// Envelope 已损坏时，重复投递通常仍无法修复，且可能形成 poison message 无限循环。
+		// 因此这里告警后直接 Ack 删除；调用方应通过 OnAlert 排查生产端或历史脏数据。
 		c.logger.Errorf("taskx: delay[%s][%d] decode error: %v, raw: %s", c.runner.GetName(), id, err, raw)
 		c.alert(core.AlertCorruptMessage, fmt.Sprintf("delay[%s] decode failed: %v, raw: %s", c.runner.GetName(), err, raw))
 		if ackErr := c.driver.Ack(ctx, c.processingKey(), raw); ackErr != nil {

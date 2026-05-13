@@ -51,9 +51,9 @@ func (s *Scheduler) alert(alertType core.AlertType, msg string) {
 	if s.onAlert != nil {
 		s.onAlert(
 			core.AlertData{
-				core.AlertSourceTimer,
-				alertType,
-				msg,
+				Source:    core.AlertSourceTimer,
+				AlertType: alertType,
+				Msg:       msg,
 			},
 		)
 	}

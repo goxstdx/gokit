@@ -26,7 +26,7 @@ type RunnerFuncResult struct {
 	IsOk bool
 	Err  error
 
-	NextTime int64 // >0 时转入 DelayQueue 延迟重试
+	NextTime int64 // DelayQueue 失败重试的下次执行时间；EventQueue 返回该值时会告警并忽略
 }
 
 // TimerTaskRunner 定时任务接口
@@ -96,6 +96,8 @@ const (
 	AlertCorruptMessage AlertType = "corrupt_message"
 	// AlertMaxRetryExhausted 消息重试次数耗尽，进入死信队列
 	AlertMaxRetryExhausted AlertType = "max_retry_exhausted"
+	// AlertEventNextTimeIgnored EventQueue 中返回 NextTime；当前仅告警并按 EventQueue 即时重试语义处理
+	AlertEventNextTimeIgnored AlertType = "event_next_time_ignored"
 	// AlertTimerAllAttemptsFailed 定时任务所有重试均失败
 	AlertTimerAllAttemptsFailed AlertType = "timer_all_attempts_failed"
 )

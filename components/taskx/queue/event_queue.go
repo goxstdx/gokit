@@ -71,7 +71,9 @@ func (c *EventConsumer) alert(alertType core.AlertType, msg string) {
 	if c.onAlert != nil {
 		c.onAlert(
 			core.AlertData{
-				core.AlertSourceEvent, alertType, msg,
+				Source:    core.AlertSourceEvent,
+				AlertType: alertType,
+				Msg:       msg,
 			},
 		)
 	}
@@ -138,7 +140,10 @@ func (c *EventConsumer) startupRecover(ctx context.Context) {
 	case <-time.After(c.procTimeout):
 	}
 
-	// 等待结束后，processing 中残留的消息一定是崩溃遗留的，分批恢复直到清空
+	// 等待结束后，将 processing 中残留消息视为可恢复消息并分批移回 pending。
+	// EventQueue 的 processing 使用 List，无法按单条消息进入 processing 的时间过滤；
+	// 若业务处理耗时超过 processingTimeout，可能发生重复投递，业务侧需保持幂等。
+	// 后续优化可考虑：processing 改为带时间戳结构、引入租约续期，或增加实例心跳辅助判断。
 	var totalRecovered int64
 	for {
 		recovered, err := c.driver.RecoverProcessing(ctx, c.processingKey(), c.pendingKey(), c.procTimeout)
@@ -186,6 +191,8 @@ func (c *EventConsumer) consume(ctx context.Context, id int) {
 func (c *EventConsumer) process(ctx context.Context, raw string, id int) {
 	env, err := core.DecodeEnvelope(raw)
 	if err != nil {
+		// Envelope 已损坏时，重复投递通常仍无法修复，且可能形成 poison message 无限循环。
+		// 因此这里告警后直接 Ack 删除；调用方应通过 OnAlert 排查生产端或历史脏数据。
 		c.logger.Errorf("taskx: event[%s][%d] decode error: %v, raw: %s", c.runner.GetName(), id, err, raw)
 		c.alert(core.AlertCorruptMessage, fmt.Sprintf("event[%s] decode failed: %v, raw: %s", c.runner.GetName(), err, raw))
 		if ackErr := c.driver.Ack(ctx, c.processingKey(), raw); ackErr != nil {
@@ -204,6 +211,19 @@ func (c *EventConsumer) process(ctx context.Context, raw string, id int) {
 	}
 
 	c.logger.Warnf("taskx: event[%s][%d] run failed: %v", c.runner.GetName(), id, result.Err)
+	if result.NextTime > 0 {
+		// NextTime 仅对 DelayQueue 重试生效。EventQueue 当前不自动转投 DelayQueue，
+		// 这里保留即时重试语义并触发告警，避免调用方误以为已进入延迟队列。
+		c.alert(
+			core.AlertEventNextTimeIgnored,
+			fmt.Sprintf(
+				"event[%s] returned NextTime=%d; EventQueue ignores NextTime and will retry via pending, envelope_id=%s",
+				c.runner.GetName(),
+				result.NextTime,
+				env.ID,
+			),
+		)
+	}
 	env.RetryCount++
 
 	if env.RetryCount > *c.option.MaxRetry {

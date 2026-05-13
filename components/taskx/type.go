@@ -25,6 +25,7 @@ const (
 const (
 	AlertCorruptMessage         = core.AlertCorruptMessage
 	AlertMaxRetryExhausted      = core.AlertMaxRetryExhausted
+	AlertEventNextTimeIgnored   = core.AlertEventNextTimeIgnored
 	AlertTimerAllAttemptsFailed = core.AlertTimerAllAttemptsFailed
 )
 
