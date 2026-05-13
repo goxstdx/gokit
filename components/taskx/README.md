@@ -89,19 +89,21 @@ taskx:event:{runner_name}:dead         # 死信
 ```
 
 - **等待 processingTimeout**：给活跃的消费者足够时间处理完，降低误恢复正在执行消息的概率
-- **分布式锁**：多机启动时只有一台执行恢复
+- **分布式锁**：多机启动时只有一台执行恢复；恢复期间会自动续租，降低长恢复导致锁过期的并发恢复风险
 - 等待结束后，processing 中还残留的消息会被视为可恢复消息并移回 pending；如果业务处理时间超过 `processingTimeout`，可能发生重复投递，业务侧需保持幂等或调大该配置
+- 恢复循环设置了最大恢复时长，超限会告警并提前退出，避免极端情况下无限恢复
 
 > **后续优化方向**：EventQueue 可考虑将 processing 改为带时间戳结构；DelayQueue 可考虑处理期间刷新租约/score；也可以增加实例心跳辅助判断，减少长任务被误恢复的概率。
 
 ### 4.1 优雅停止
 
-调用 `Manager.Stop()` 时：
+调用 `Manager.Stop(ctx)` 时：
 
 1. 取消 context，等待所有消费协程退出
 2. **DelayQueue**：关闭内部 channel 后，在 **1 秒超时** 内将 channel 中残留的已转入 processing 但未执行的消息 Nack 回 pending
 3. 超时后仍未处理完的消息保留在 processing 中，等待下次启动时的崩溃恢复机制兜底
 4. **TimerTask**：等待正在执行的定时任务完成后才返回
+5. 若 `ctx` 到期，`Stop(ctx)` 返回 `ctx.Err()`，调用方可据此决定是否继续等待
 
 > **关于 DelayQueue 停止时的消息安全**：`fetch` 中 Lua 脚本会原子地将到期消息从 pending 转移到 processing，然后逐条投入 channel。如果 Stop 在 Lua 执行完成后、消息投入 channel 前触发，这部分消息会留在 processing 中而非 channel 中，因此 drain 阶段无法 Nack 回去。这些消息不会丢失，会在下次启动时由崩溃恢复机制兜底。当前设计优先保证停止速度，避免长时间阻塞导致 K8s 等容器编排系统强制杀死 pod。
 >
@@ -159,7 +161,7 @@ Producer                           Redis                              Consumer
    │                                 │    回 pending    进 dead           │
 ```
 
-如果 EventQueue 的 `Run()` 返回 `NextTime > 0`，框架不会自动转投 DelayQueue；它会触发 `OnAlert(AlertEventNextTimeIgnored)`，随后仍按 EventQueue 的即时重试语义回到 pending。若需要指定下次执行时间，请使用 DelayQueue。
+如果 EventQueue 的 `Run()` 返回 `NextTime > 0`，框架不会自动转投 DelayQueue；它会触发 `OnAlert(AlertEventNextTimeIgnored)`，并直接 Ack 当前 event 消息，不再回到 event 重试链路。若需要指定下次执行时间，请由业务侧在告警回调中自行决定是否转投 DelayQueue。
 
 ### DelayQueue
 
@@ -208,6 +210,7 @@ Cron 触发 ──► 按并发策略生成锁 Key ──► 抢分布式锁 ─
 - `example/02_bootstrap.go`：注册、启动、发布、优雅退出
 - `example/03_recovery.go`：死信恢复
 - `example/04_custom_driver.go`：自定义驱动接入
+- `example/05_alert_notify.go`：接收 NextTime 告警并由业务转投 DelayQueue
 
 ### 直接投递 payload（新消息）
 
@@ -215,13 +218,17 @@ Cron 触发 ──► 按并发策略生成锁 Key ──► 抢分布式锁 ─
 
 ```go
 // 直接投递到 event
-if err := mgr.PublishEventPayload(ctx, "event-runner-name", rawPayload); err != nil {
+if env, err := mgr.PublishEventPayload(ctx, "event-runner-name", rawPayload); err != nil {
     return err
+} else {
+    log.Infof("event envelope id=%s", env.ID)
 }
 
 // 直接投递到 delay（executeAt 为秒级时间戳）
-if err := mgr.PublishDelayPayload(ctx, "delay-runner-name", rawPayload, executeAt); err != nil {
+if env, err := mgr.PublishDelayPayload(ctx, "delay-runner-name", rawPayload, executeAt); err != nil {
     return err
+} else {
+    log.Infof("delay envelope id=%s", env.ID)
 }
 ```
 
@@ -236,10 +243,14 @@ if err := mgr.PublishDelayPayload(ctx, "delay-runner-name", rawPayload, executeA
 | `WithLogger(l)` | 无（必填） | `logger_factory.Logger` 实例 |
 | `WithPollInterval(d)` | `1s` | DelayQueue 轮询间隔 |
 | `WithLockTTL(d)` | `30s` | 分布式锁默认 TTL |
+| `WithInternalOpTimeout(d)` | `3s` | 内部关键操作（如 Ack/RetryRequeue/MoveToDead/恢复锁续租与释放）使用的独立超时，避免受消费 ctx cancel 影响 |
+| `WithTimerHeartbeatInterval(d)` | 自动计算（`min(HealthInterval, HealthBeatTimeout/2)`，下限 `1s`） | Timer 心跳上报间隔；用于避免 `HealthBeatTimeout` 较小时误判不健康 |
 | `WithProcessingTimeout(d)` | `5m` | processing 队列超时时间，用于崩溃恢复等待 |
 | `WithRecoverBatchSize(n)` | `1000` | 崩溃恢复每批次移动的消息数量 |
 | `WithDefaultTimerTaskOption(opt)` | `MaxRetry=0, ConcurrencyPolicy=forbid_overlap` | TimerTask 全局默认选项，单任务未显式指定时继承 |
-| `WithAlertFunc(f)` | `nil`（仅日志） | 异常告警回调，触发场景：消息格式损坏、EventQueue 返回 `NextTime`、重试耗尽进死信、定时任务全部失败 |
+| `WithAlertFunc(f)` | `nil`（仅日志） | 异常告警回调（内部异步通知，不阻塞消费主流程） |
+| `WithAlertQueueSize(n)` | `1024` | 内部告警通知通道容量，满时丢弃并记录日志 |
+| `WithTraceContextKey(key)` | `"taskx_trace_id"` | 调用 `Run(ctx, payload)` 时注入 `Envelope.ID` 的 context key |
 | `WithHealthInterval(d)` | `5s` | 健康监控采样间隔，控制 `HealthSnapshot()` 刷新频率 |
 | `WithHealthBeatTimeout(d)` | `15s` | 心跳超时阈值，超过后对应监听器 `Alive=false` |
 

@@ -12,6 +12,7 @@ type RunnerOption = core.RunnerOption
 type TimerTaskOption = core.TimerTaskOption
 type TimerConcurrencyPolicy = core.TimerConcurrencyPolicy
 type Envelope = core.Envelope
+type EnvelopeSource = core.EnvelopeSource
 type Logger = core.Logger
 type AlertFunc = core.AlertFunc
 type AlertType = core.AlertType

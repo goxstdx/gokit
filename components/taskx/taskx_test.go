@@ -144,7 +144,7 @@ func skipIfNoRedis(t *testing.T, rdb redis.Cmdable) {
 // 测试：Envelope 编解码
 // ============================================================
 func TestEnvelope(t *testing.T) {
-	env := core.NewEnvelope("hello world")
+	env := core.NewEnvelope("hello world", core.EnvelopeSourceEvent)
 	env.RetryCount = 2
 
 	encoded := env.Encode()
@@ -221,14 +221,14 @@ func TestEventQueueFlow(t *testing.T) {
 	}
 
 	ep := redisx.NewEventQueueProvider(rdb)
-	env := core.NewEnvelope("success-msg")
+	env := core.NewEnvelope("success-msg", core.EnvelopeSourceEvent)
 	pendingKey := prefix + ":event:{evt-flow}:pending"
 	if err := ep.Push(ctx, pendingKey, env.Encode()); err != nil {
 		t.Fatal(err)
 	}
 
 	// 发送一条总是失败的消息（应进入死信）
-	envFail := core.NewEnvelope("fail-always")
+	envFail := core.NewEnvelope("fail-always", core.EnvelopeSourceEvent)
 	if err := ep.Push(ctx, pendingKey, envFail.Encode()); err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestDelayQueueFlow(t *testing.T) {
 	pendingKey := prefix + ":delay:{dly-flow}:pending"
 	executeAt := time.Now().Add(time.Second).Unix()
 	for i := 0; i < 3; i++ {
-		env := core.NewEnvelope(fmt.Sprintf("delay-msg-%d", i))
+		env := core.NewEnvelope(fmt.Sprintf("delay-msg-%d", i), core.EnvelopeSourceDelay)
 		if err := dp.Add(ctx, pendingKey, env.Encode(), executeAt); err != nil {
 			t.Fatal(err)
 		}
@@ -542,10 +542,10 @@ func TestPublishAPIs(t *testing.T) {
 		_ = mgr.Stop(ctx)
 	}()
 
-	if err := mgr.PublishEvent(ctx, &testRunner{name: "publish-event", payload: "event-payload"}); err != nil {
+	if _, err := mgr.PublishEvent(ctx, &testRunner{name: "publish-event", payload: "event-payload"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := mgr.PublishDelay(ctx, &testRunner{name: "publish-delay", payload: "delay-payload"}, time.Now().Add(time.Second).Unix()); err != nil {
+	if _, err := mgr.PublishDelay(ctx, &testRunner{name: "publish-delay", payload: "delay-payload"}, time.Now().Add(time.Second).Unix()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -601,7 +601,7 @@ func TestGracefulShutdown(t *testing.T) {
 	ep := redisx.NewEventQueueProvider(rdb)
 	pendingKey := prefix + ":event:{shutdown-test}:pending"
 	for i := 0; i < 2; i++ {
-		env := core.NewEnvelope(fmt.Sprintf("msg-%d", i))
+		env := core.NewEnvelope(fmt.Sprintf("msg-%d", i), core.EnvelopeSourceEvent)
 		if err := ep.Push(ctx, pendingKey, env.Encode()); err != nil {
 			t.Fatal(err)
 		}
@@ -795,7 +795,7 @@ func TestDeadLetterRecovery(t *testing.T) {
 
 	ep := redisx.NewEventQueueProvider(rdb)
 	pendingKey := prefix + ":event:{dlq-recover}:pending"
-	env := core.NewEnvelope("will-fail-then-succeed")
+	env := core.NewEnvelope("will-fail-then-succeed", core.EnvelopeSourceEvent)
 	if err := ep.Push(ctx, pendingKey, env.Encode()); err != nil {
 		t.Fatal(err)
 	}
@@ -940,7 +940,7 @@ func TestManagerHealthSnapshot(t *testing.T) {
 	}
 
 	// 推入一条未来执行的 delay 消息，验证 pending 长度采样。
-	if err := mgr.PublishDelay(ctx, &testRunner{name: "health-delay", payload: "future-job"}, time.Now().Add(30*time.Second).Unix()); err != nil {
+	if _, err := mgr.PublishDelay(ctx, &testRunner{name: "health-delay", payload: "future-job"}, time.Now().Add(30*time.Second).Unix()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -994,7 +994,7 @@ func TestEventPayloadDirectRepublishToDelay(t *testing.T) {
 	eventRunner := newTestRunner(
 		"evt-direct", func(ctx context.Context, payload string) core.RunnerFuncResult {
 			nextTime := time.Now().Add(1 * time.Second).Unix()
-			if err := mgr.PublishDelayPayload(ctx, "delay-direct", payload, nextTime); err != nil {
+			if _, err := mgr.PublishDelayPayload(ctx, "delay-direct", payload, nextTime); err != nil {
 				return core.RunnerFuncResult{IsOk: false, Err: err}
 			}
 			return core.RunnerFuncResult{IsOk: true}
@@ -1030,7 +1030,7 @@ func TestEventPayloadDirectRepublishToDelay(t *testing.T) {
 	defer func() { _ = mgr.Stop(context.Background()) }()
 
 	rawPayload := `{"order_id":"o123","trace_id":"t999","retry":1}`
-	if err := mgr.PublishEventPayload(ctx, "evt-direct", rawPayload); err != nil {
+	if _, err := mgr.PublishEventPayload(ctx, "evt-direct", rawPayload); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1041,5 +1041,90 @@ func TestEventPayloadDirectRepublishToDelay(t *testing.T) {
 		}
 	case <-time.After(6 * time.Second):
 		t.Fatal("timeout waiting for delay payload")
+	}
+}
+
+// ============================================================
+// 测试：Event 返回 NextTime 后仅告警并 Ack，不再回 event 重试
+// ============================================================
+func TestEventNextTimeAlertAndNoRetry(t *testing.T) {
+	rdb := newTestRedis()
+	skipIfNoRedis(t, rdb)
+	log := newTestLogger(t)
+
+	ctx := context.Background()
+	prefix := fmt.Sprintf("test_%d", time.Now().UnixNano())
+	defer cleanKeys(ctx, rdb, prefix)
+
+	var runCount atomic.Int64
+	alertCh := make(chan core.AlertData, 4)
+	runner := newTestRunner(
+		"evt-next-time", func(_ context.Context, _ string) core.RunnerFuncResult {
+			runCount.Add(1)
+			return core.RunnerFuncResult{
+				IsOk:     false,
+				Err:      fmt.Errorf("need reschedule"),
+				NextTime: time.Now().Add(5 * time.Second).Unix(),
+			}
+		},
+	)
+
+	reg := taskx.NewRegistry()
+	if err := reg.RegisterEventRunner(runner, core.RunnerOption{MaxRetry: core.IntPtr(3), ConsumerCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := taskx.NewRedisManager(
+		rdb, reg,
+		taskx.WithKeyPrefix(prefix),
+		taskx.WithLogger(log),
+		taskx.WithAlertFunc(func(data core.AlertData) {
+			select {
+			case alertCh <- data:
+			default:
+			}
+		}),
+	)
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = mgr.Stop(context.Background()) }()
+
+	env, err := mgr.PublishEventPayload(ctx, "evt-next-time", "payload-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var alert core.AlertData
+	select {
+	case alert = <-alertCh:
+	case <-time.After(4 * time.Second):
+		t.Fatal("timeout waiting next-time alert")
+	}
+	if alert.AlertType != core.AlertEventNextTimeIgnored {
+		t.Fatalf("unexpected alert type: %s", alert.AlertType)
+	}
+	if alert.Envelope == nil || alert.Envelope.ID != env.ID {
+		t.Fatalf("alert envelope mismatch: got=%+v want_id=%s", alert.Envelope, env.ID)
+	}
+
+	// 额外等待，确认不会再次重试。
+	time.Sleep(2 * time.Second)
+	if got := runCount.Load(); got != 1 {
+		t.Fatalf("expected run count=1, got=%d", got)
+	}
+
+	pendingKey := prefix + ":event:{evt-next-time}:pending"
+	processingKey := prefix + ":event:{evt-next-time}:processing"
+	pendingLen, err := rdb.LLen(ctx, pendingKey).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	processingLen, err := rdb.LLen(ctx, processingKey).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pendingLen != 0 || processingLen != 0 {
+		t.Fatalf("expected event queue empty after next-time ack, pending=%d processing=%d", pendingLen, processingLen)
 	}
 }

@@ -60,8 +60,8 @@ func BootstrapExample() {
 		panic(err)
 	}
 
-	_ = mgr.PublishEvent(ctx, &OrderNotifyRunner{OrderID: "ORD-001", UserID: "USR-123"})
-	_ = mgr.PublishDelay(ctx, &OrderNotifyRunner{OrderID: "ORD-002", UserID: "USR-456"}, time.Now().Add(10*time.Minute).Unix())
+	_, _ = mgr.PublishEvent(ctx, &OrderNotifyRunner{OrderID: "ORD-001", UserID: "USR-123"})
+	_, _ = mgr.PublishDelay(ctx, &OrderNotifyRunner{OrderID: "ORD-002", UserID: "USR-456"}, time.Now().Add(10*time.Minute).Unix())
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

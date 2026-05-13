@@ -56,6 +56,10 @@ type Manager struct {
 
 	monitorCancel context.CancelFunc
 	monitorWG     sync.WaitGroup
+	alertCancel   context.CancelFunc
+	alertWG       sync.WaitGroup
+	alertQueue    chan core.AlertData
+	alertHandler  core.AlertFunc
 
 	healthMu       sync.RWMutex
 	eventBeatAt    map[string]time.Time
@@ -139,7 +143,24 @@ func (m *Manager) Start(ctx context.Context) error {
 	if m.cfg.HealthBeatTimeout <= 0 {
 		m.cfg.HealthBeatTimeout = 15 * time.Second
 	}
+	if m.cfg.TimerHeartbeatInterval <= 0 {
+		// 默认让 timer 心跳快于超时阈值，避免低阈值场景误报不健康。
+		m.cfg.TimerHeartbeatInterval = m.cfg.HealthInterval
+		if hb := m.cfg.HealthBeatTimeout / 2; hb > 0 && (m.cfg.TimerHeartbeatInterval <= 0 || hb < m.cfg.TimerHeartbeatInterval) {
+			m.cfg.TimerHeartbeatInterval = hb
+		}
+		if m.cfg.TimerHeartbeatInterval <= 0 {
+			m.cfg.TimerHeartbeatInterval = 5 * time.Second
+		}
+		if m.cfg.TimerHeartbeatInterval < time.Second {
+			m.cfg.TimerHeartbeatInterval = time.Second
+		}
+	}
+	if m.cfg.AlertQueueSize <= 0 {
+		m.cfg.AlertQueueSize = 1024
+	}
 	m.cfg.OnHeartbeat = m.recordHeartbeat
+	m.startAlertDispatcherLocked()
 
 	// 检测驱动版本兼容性（如 BLMOVE 要求 Redis >= 6.2）
 	type versionChecker interface {
@@ -190,74 +211,137 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 
 	m.running = true
-	m.refreshHealthSnapshot(context.Background(), true)
+	snapCtx, snapCancel := m.internalOpContext(context.Background(), 0)
+	m.refreshHealthSnapshot(snapCtx, true)
+	snapCancel()
 	m.startMonitorLocked()
 	m.cfg.Logger.Infof("taskx: manager started")
 	return nil
 }
 
-// Stop 优雅停止所有队列和任务。
-//
-// 当前实现会无限等待所有消费者和定时任务退出，传入的 ctx 未用于超时控制。
-// 在 K8s 等容器环境中，可依赖 terminationGracePeriodSeconds 作为兜底超时。
-// TODO: 后续可考虑监听 ctx.Done()，在超时后强制返回（残留消息由崩溃恢复兜底）。
+// Stop 优雅停止所有队列和任务，并受 ctx 控制最大等待时长。
+// 若在 ctx 截止前未完成，返回 ctx.Err()；此时停止流程可能仍在后台继续。
 func (m *Manager) Stop(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if !m.running {
+		m.cfg.Logger.Infof("taskx: manager stop skipped, already stopped")
 		return nil
 	}
+	m.cfg.Logger.Infof("taskx: manager stopping")
 
+	// 1) 停健康监控协程，避免停止过程中继续采样并打扰最终状态。
 	if m.monitorCancel != nil {
 		m.monitorCancel()
 		m.monitorCancel = nil
 	}
-	m.monitorWG.Wait()
+	if err := waitWithContext(ctx, m.monitorWG.Wait); err != nil {
+		m.cfg.Logger.Errorf("taskx: manager stop failed while waiting monitor: %v", err)
+		return fmt.Errorf("taskx: wait monitor stop: %w", err)
+	}
+	m.cfg.Logger.Infof("taskx: monitor stopped")
 
+	// 2) 停 timer 调度器并等待已触发任务退出；如果任务不响应 ctx，可能在此阶段超时。
 	if m.scheduler != nil {
 		stopCtx := m.scheduler.Stop()
-		<-stopCtx.Done()
+		select {
+		case <-stopCtx.Done():
+			m.cfg.Logger.Infof("taskx: timer scheduler stopped")
+		case <-ctx.Done():
+			m.cfg.Logger.Errorf("taskx: manager stop timeout while waiting timer stop: %v", ctx.Err())
+			return fmt.Errorf("taskx: wait timer stop: %w", ctx.Err())
+		}
 		m.scheduler = nil
 	}
 
-	m.stopConsumersLocked()
+	// 3) 逐个停止 queue consumer（内部会完成 drain/recover 兜底逻辑）。
+	if err := m.stopConsumersWithContextLocked(ctx); err != nil {
+		m.cfg.Logger.Errorf("taskx: manager stop failed while stopping consumers: %v", err)
+		return err
+	}
+	m.cfg.Logger.Infof("taskx: all consumers stopped")
+
+	// 4) 停告警分发协程并 drain 剩余告警，避免停止时静默丢失上下文信息。
+	if err := m.stopAlertDispatcherWithContextLocked(ctx); err != nil {
+		m.cfg.Logger.Errorf("taskx: manager stop failed while stopping alert dispatcher: %v", err)
+		return err
+	}
+	m.cfg.Logger.Infof("taskx: alert dispatcher stopped")
 	m.cfg.OnHeartbeat = nil
 
 	m.running = false
-	m.refreshHealthSnapshot(context.Background(), false)
+	snapCtx, snapCancel := m.internalOpContext(context.Background(), 0)
+	m.refreshHealthSnapshot(snapCtx, false)
+	snapCancel()
 	m.cfg.Logger.Infof("taskx: manager stopped")
 	return nil
 }
 
-// PublishEvent 发布事件到 EventQueue
-func (m *Manager) PublishEvent(ctx context.Context, runner core.QueueRunner) error {
+// PublishEvent 发布事件到 EventQueue，并返回创建的 Envelope。
+func (m *Manager) PublishEvent(ctx context.Context, runner core.QueueRunner) (*core.Envelope, error) {
 	return m.PublishEventPayload(ctx, runner.GetName(), runner.Marshal())
 }
 
-// PublishDelay 发布延迟任务到 DelayQueue
-func (m *Manager) PublishDelay(ctx context.Context, runner core.QueueRunner, executeAt int64) error {
+// PublishDelay 发布延迟任务到 DelayQueue，并返回创建的 Envelope。
+func (m *Manager) PublishDelay(ctx context.Context, runner core.QueueRunner, executeAt int64) (*core.Envelope, error) {
 	return m.PublishDelayPayload(ctx, runner.GetName(), runner.Marshal(), executeAt)
 }
 
 // PublishEventPayload 直接将 payload 包装为新消息并发布到 EventQueue。
-func (m *Manager) PublishEventPayload(ctx context.Context, runnerName string, payload string) error {
+func (m *Manager) PublishEventPayload(ctx context.Context, runnerName string, payload string) (*core.Envelope, error) {
 	if m.cfg.EventDriver == nil {
-		return fmt.Errorf("taskx: event queue driver not configured")
+		return nil, fmt.Errorf("taskx: event queue driver not configured")
 	}
-	env := core.NewEnvelope(payload)
+	env := core.NewEnvelope(payload, core.EnvelopeSourceEvent)
+	return m.PublishEventEnvelope(ctx, runnerName, env)
+}
+
+// PublishEventEnvelope 将指定 Envelope 发布到 EventQueue。
+func (m *Manager) PublishEventEnvelope(ctx context.Context, runnerName string, env *core.Envelope) (*core.Envelope, error) {
+	if m.cfg.EventDriver == nil {
+		return nil, fmt.Errorf("taskx: event queue driver not configured")
+	}
+	if env == nil {
+		return nil, fmt.Errorf("taskx: envelope is nil")
+	}
+	env.Source = core.EnvelopeSourceEvent
 	key := fmt.Sprintf("%s:event:{%s}:pending", m.cfg.KeyPrefix, runnerName)
-	return m.cfg.EventDriver.Push(ctx, key, env.Encode())
+	if err := m.cfg.EventDriver.Push(ctx, key, env.Encode()); err != nil {
+		return nil, err
+	}
+	return env, nil
 }
 
 // PublishDelayPayload 直接将 payload 包装为新消息并发布到 DelayQueue。
-func (m *Manager) PublishDelayPayload(ctx context.Context, runnerName string, payload string, executeAt int64) error {
+func (m *Manager) PublishDelayPayload(ctx context.Context, runnerName string, payload string, executeAt int64) (*core.Envelope, error) {
 	if m.cfg.DelayDriver == nil {
-		return fmt.Errorf("taskx: delay queue driver not configured")
+		return nil, fmt.Errorf("taskx: delay queue driver not configured")
 	}
-	env := core.NewEnvelope(payload)
+	env := core.NewEnvelope(payload, core.EnvelopeSourceDelay)
+	return m.PublishDelayEnvelope(ctx, runnerName, env, executeAt)
+}
+
+// PublishDelayEnvelope 将指定 Envelope 发布到 DelayQueue。
+func (m *Manager) PublishDelayEnvelope(ctx context.Context, runnerName string, env *core.Envelope, executeAt int64) (*core.Envelope, error) {
+	if m.cfg.DelayDriver == nil {
+		return nil, fmt.Errorf("taskx: delay queue driver not configured")
+	}
+	if env == nil {
+		return nil, fmt.Errorf("taskx: envelope is nil")
+	}
+	if executeAt <= time.Now().Unix() {
+		return nil, fmt.Errorf("taskx: invalid executeAt=%d, must be greater than current unix time", executeAt)
+	}
+	env.Source = core.EnvelopeSourceDelay
 	key := fmt.Sprintf("%s:delay:{%s}:pending", m.cfg.KeyPrefix, runnerName)
-	return m.cfg.DelayDriver.Add(ctx, key, env.Encode(), executeAt)
+	if err := m.cfg.DelayDriver.Add(ctx, key, env.Encode(), executeAt); err != nil {
+		return nil, err
+	}
+	return env, nil
 }
 
 // Registry 获取注册中心
@@ -325,6 +409,17 @@ func (m *Manager) stopConsumersLocked() {
 	m.consumers = nil
 }
 
+func (m *Manager) stopConsumersWithContextLocked(ctx context.Context) error {
+	for i, c := range m.consumers {
+		if err := waitWithContext(ctx, c.Stop); err != nil {
+			return fmt.Errorf("taskx: stop consumer[%d]: %w", i, err)
+		}
+		m.cfg.Logger.Infof("taskx: consumer[%d] stopped", i)
+	}
+	m.consumers = nil
+	return nil
+}
+
 func (m *Manager) recordHeartbeat(hb core.ListenerHeartbeat) {
 	beatAt := hb.At
 	if beatAt.IsZero() {
@@ -390,7 +485,7 @@ func (m *Manager) refreshHealthSnapshot(ctx context.Context, running bool) {
 		item := QueueListenerHealth{LastBeatAt: eventBeat[name]}
 		item.Alive = !item.LastBeatAt.IsZero() && now.Sub(item.LastBeatAt) <= m.cfg.HealthBeatTimeout
 		if m.cfg.EventDriver != nil {
-			lenCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			lenCtx, cancel := m.internalOpContext(ctx, 2*time.Second)
 			n, err := m.cfg.EventDriver.Len(lenCtx, fmt.Sprintf("%s:event:{%s}:pending", m.cfg.KeyPrefix, name))
 			cancel()
 			if err != nil {
@@ -406,7 +501,7 @@ func (m *Manager) refreshHealthSnapshot(ctx context.Context, running bool) {
 		item := QueueListenerHealth{LastBeatAt: delayBeat[name]}
 		item.Alive = !item.LastBeatAt.IsZero() && now.Sub(item.LastBeatAt) <= m.cfg.HealthBeatTimeout
 		if m.cfg.DelayDriver != nil {
-			lenCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			lenCtx, cancel := m.internalOpContext(ctx, 2*time.Second)
 			n, err := m.cfg.DelayDriver.Len(lenCtx, fmt.Sprintf("%s:delay:{%s}:pending", m.cfg.KeyPrefix, name))
 			cancel()
 			if err != nil {
@@ -426,4 +521,164 @@ func (m *Manager) refreshHealthSnapshot(ctx context.Context, running bool) {
 	m.healthMu.Lock()
 	m.healthSnapshot = snap
 	m.healthMu.Unlock()
+}
+
+func (m *Manager) startAlertDispatcherLocked() {
+	m.alertHandler = m.cfg.OnAlert
+	m.alertQueue = make(chan core.AlertData, m.cfg.AlertQueueSize)
+	m.cfg.OnAlert = m.enqueueAlert
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.alertCancel = cancel
+	m.alertWG.Add(1)
+	go func() {
+		defer m.alertWG.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case data := <-m.alertQueue:
+				if m.alertHandler != nil {
+					m.alertHandler(data)
+				}
+			}
+		}
+	}()
+}
+
+func (m *Manager) stopAlertDispatcherLocked() {
+	if m.alertCancel != nil {
+		m.alertCancel()
+		m.alertCancel = nil
+	}
+	m.alertWG.Wait()
+
+	if m.alertQueue != nil {
+		drained := 0
+		for {
+			select {
+			case data := <-m.alertQueue:
+				drained++
+				m.cfg.Logger.Warnf(
+					"taskx: alert queue drain on stop, source=%s type=%s runner=%s envelope_id=%s",
+					data.Source, data.AlertType, data.RunnerName, alertEnvelopeID(data.Envelope),
+				)
+			default:
+				if drained > 0 {
+					m.cfg.Logger.Warnf("taskx: drained %d pending alerts on stop", drained)
+				}
+				m.alertQueue = nil
+				break
+			}
+			if m.alertQueue == nil {
+				break
+			}
+		}
+	}
+
+	m.cfg.OnAlert = m.alertHandler
+	m.alertHandler = nil
+}
+
+func (m *Manager) stopAlertDispatcherWithContextLocked(ctx context.Context) error {
+	if m.alertCancel != nil {
+		m.alertCancel()
+		m.alertCancel = nil
+	}
+	if err := waitWithContext(ctx, m.alertWG.Wait); err != nil {
+		return fmt.Errorf("taskx: wait alert dispatcher stop: %w", err)
+	}
+
+	if m.alertQueue != nil {
+		drained := 0
+		for {
+			select {
+			case data := <-m.alertQueue:
+				drained++
+				m.cfg.Logger.Warnf(
+					"taskx: alert queue drain on stop, source=%s type=%s runner=%s envelope_id=%s",
+					data.Source, data.AlertType, data.RunnerName, alertEnvelopeID(data.Envelope),
+				)
+			default:
+				if drained > 0 {
+					m.cfg.Logger.Warnf("taskx: drained %d pending alerts on stop", drained)
+				}
+				m.alertQueue = nil
+				break
+			}
+			if m.alertQueue == nil {
+				break
+			}
+		}
+	}
+
+	m.cfg.OnAlert = m.alertHandler
+	m.alertHandler = nil
+	return nil
+}
+
+func (m *Manager) enqueueAlert(data core.AlertData) {
+	if data.Source == "" && data.Envelope != nil {
+		switch data.Envelope.Source {
+		case core.EnvelopeSourceEvent:
+			data.Source = core.AlertSourceEvent
+		case core.EnvelopeSourceDelay:
+			data.Source = core.AlertSourceDelay
+		case core.EnvelopeSourceTimer:
+			data.Source = core.AlertSourceTimer
+		}
+	}
+
+	if m.alertQueue == nil {
+		if m.alertHandler != nil {
+			m.alertHandler(data)
+		}
+		return
+	}
+
+	select {
+	case m.alertQueue <- data:
+	default:
+		m.cfg.Logger.Warnf(
+			"taskx: alert queue full, dropping alert source=%s type=%s runner=%s envelope_id=%s",
+			data.Source, data.AlertType, data.RunnerName, alertEnvelopeID(data.Envelope),
+		)
+	}
+}
+
+func alertEnvelopeID(env *core.Envelope) string {
+	if env == nil {
+		return ""
+	}
+	return env.ID
+}
+
+func waitWithContext(ctx context.Context, fn func()) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *Manager) internalOpContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = m.cfg.InternalOpTimeout
+	}
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	return context.WithTimeout(parent, timeout)
 }

@@ -14,14 +14,16 @@ import (
 
 // Scheduler 定时任务调度器
 type Scheduler struct {
-	cron    *cron.Cron
-	parser  cron.Parser
-	lock    driver.LockDriver
-	prefix  string
-	lockTTL time.Duration
-	logger  core.Logger
-	onAlert core.AlertFunc
-	onBeat  core.ListenerHeartbeatFunc
+	cron              *cron.Cron
+	parser            cron.Parser
+	lock              driver.LockDriver
+	prefix            string
+	lockTTL           time.Duration
+	internalOpTimeout time.Duration
+	heartbeatInterval time.Duration
+	logger            core.Logger
+	onAlert           core.AlertFunc
+	onBeat            core.ListenerHeartbeatFunc
 
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -34,31 +36,32 @@ func NewScheduler(
 	lk driver.LockDriver,
 	prefix string,
 	lockTTL time.Duration,
+	internalOpTimeout time.Duration,
+	heartbeatInterval time.Duration,
 	logger core.Logger,
 	onAlert core.AlertFunc,
 	onBeat core.ListenerHeartbeatFunc,
 ) *Scheduler {
 	return &Scheduler{
-		cron:    cron.New(cron.WithSeconds(), cron.WithChain(cron.Recover(cronLogger{logger: logger}))),
-		parser:  cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor),
-		lock:    lk,
-		prefix:  prefix,
-		lockTTL: lockTTL,
-		logger:  logger,
-		onAlert: onAlert,
-		onBeat:  onBeat,
+		cron:              cron.New(cron.WithSeconds(), cron.WithChain(cron.Recover(cronLogger{logger: logger}))),
+		parser:            cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor),
+		lock:              lk,
+		prefix:            prefix,
+		lockTTL:           lockTTL,
+		internalOpTimeout: internalOpTimeout,
+		heartbeatInterval: heartbeatInterval,
+		logger:            logger,
+		onAlert:           onAlert,
+		onBeat:            onBeat,
 	}
 }
 
-func (s *Scheduler) alert(alertType core.AlertType, msg string) {
+func (s *Scheduler) alert(data core.AlertData) {
 	if s.onAlert != nil {
-		s.onAlert(
-			core.AlertData{
-				Source:    core.AlertSourceTimer,
-				AlertType: alertType,
-				Msg:       msg,
-			},
-		)
+		if data.Source == "" {
+			data.Source = core.AlertSourceTimer
+		}
+		s.onAlert(data)
 	}
 }
 
@@ -71,6 +74,17 @@ func (s *Scheduler) beat() {
 		Name: "cron",
 		At:   time.Now(),
 	})
+}
+
+func (s *Scheduler) internalOpContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	timeout := s.internalOpTimeout
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	return context.WithTimeout(parent, timeout)
 }
 
 // Register 注册一个定时任务。
@@ -115,7 +129,9 @@ func (s *Scheduler) runTask(name string, task core.TimerTaskRunner, opt core.Tim
 
 	lockKey := s.lockKey(name, *opt.ConcurrencyPolicy, scheduledAt)
 
-	ok, err := s.lock.Lock(ctx, lockKey, s.lockTTL)
+	lockCtx, lockCancel := s.internalOpContext(ctx)
+	ok, err := s.lock.Lock(lockCtx, lockKey, s.lockTTL)
+	lockCancel()
 	if err != nil {
 		s.logger.Errorf("taskx: timer[%s] lock error: %v", name, err)
 		return
@@ -129,7 +145,9 @@ func (s *Scheduler) runTask(name string, task core.TimerTaskRunner, opt core.Tim
 	}
 	defer func() {
 		stopRenew()
-		_ = s.lock.Unlock(context.Background(), lockKey)
+		unlockCtx, unlockCancel := s.internalOpContext(context.Background())
+		defer unlockCancel()
+		_ = s.lock.Unlock(unlockCtx, lockKey)
 	}()
 
 	maxAttempts := 1 + *opt.MaxRetry
@@ -145,7 +163,14 @@ func (s *Scheduler) runTask(name string, task core.TimerTaskRunner, opt core.Tim
 		s.logger.Warnf("taskx: timer[%s] attempt %d/%d failed: %v", name, attempt+1, maxAttempts, result.Err)
 	}
 	s.logger.Errorf("taskx: timer[%s] all %d attempts failed", name, maxAttempts)
-	s.alert(core.AlertTimerAllAttemptsFailed, fmt.Sprintf("timer[%s] all %d attempts failed", name, maxAttempts))
+	s.alert(
+		core.AlertData{
+			Source:       core.AlertSourceTimer,
+			AlertType:    core.AlertTimerAllAttemptsFailed,
+			RunnerName:   name,
+			RunnerResult: core.RunnerFuncResult{IsOk: false, Err: fmt.Errorf("timer[%s] all %d attempts failed", name, maxAttempts)},
+		},
+	)
 }
 
 func (s *Scheduler) startRenewLoop(lockKey string) func() {
@@ -169,7 +194,9 @@ func (s *Scheduler) startRenewLoop(lockKey string) func() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				ok, err := s.lock.Renew(ctx, lockKey, s.lockTTL)
+				renewCtx, renewCancel := s.internalOpContext(ctx)
+				ok, err := s.lock.Renew(renewCtx, lockKey, s.lockTTL)
+				renewCancel()
 				if err != nil {
 					s.logger.Warnf("taskx: timer renew lock error, key=%s err=%v", lockKey, err)
 					continue
@@ -238,9 +265,13 @@ func (j *timerJob) consumeScheduledTick(now time.Time) time.Time {
 func (s *Scheduler) Start() {
 	s.mu.Lock()
 	s.ctx, s.cancel = context.WithCancel(context.Background())
+	heartbeatInterval := s.heartbeatInterval
 	s.mu.Unlock()
 
-	if _, err := s.cron.AddFunc("@every 5s", func() { s.beat() }); err != nil {
+	if heartbeatInterval <= 0 {
+		heartbeatInterval = 5 * time.Second
+	}
+	if _, err := s.cron.AddFunc("@every "+heartbeatInterval.String(), func() { s.beat() }); err != nil {
 		s.logger.Warnf("taskx: timer heartbeat registration failed: %v", err)
 	}
 	s.cron.Start()

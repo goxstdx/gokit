@@ -12,16 +12,18 @@ import (
 
 // EventConsumer 事件队列消费管理器，为单个 Runner 管理 N 个消费协程
 type EventConsumer struct {
-	runner      core.QueueRunner
-	option      core.RunnerOption
-	driver      driver.EventQueueDriver
-	lock        driver.LockDriver
-	prefix      string
-	logger      core.Logger
-	onAlert     core.AlertFunc
-	onHeartbeat core.ListenerHeartbeatFunc
-	lockTTL     time.Duration
-	procTimeout time.Duration
+	runner            core.QueueRunner
+	option            core.RunnerOption
+	driver            driver.EventQueueDriver
+	lock              driver.LockDriver
+	prefix            string
+	logger            core.Logger
+	onAlert           core.AlertFunc
+	onHeartbeat       core.ListenerHeartbeatFunc
+	traceKey          string
+	lockTTL           time.Duration
+	procTimeout       time.Duration
+	internalOpTimeout time.Duration
 
 	wg     sync.WaitGroup
 	cancel context.CancelFunc
@@ -36,21 +38,25 @@ func NewEventConsumer(
 	prefix string,
 	lockTTL time.Duration,
 	procTimeout time.Duration,
+	internalOpTimeout time.Duration,
 	logger core.Logger,
 	onAlert core.AlertFunc,
 	onHeartbeat core.ListenerHeartbeatFunc,
+	traceKey string,
 ) *EventConsumer {
 	return &EventConsumer{
-		runner:      runner,
-		option:      opt,
-		driver:      eq,
-		lock:        lk,
-		prefix:      prefix,
-		lockTTL:     lockTTL,
-		procTimeout: procTimeout,
-		logger:      logger,
-		onAlert:     onAlert,
-		onHeartbeat: onHeartbeat,
+		runner:            runner,
+		option:            opt,
+		driver:            eq,
+		lock:              lk,
+		prefix:            prefix,
+		lockTTL:           lockTTL,
+		procTimeout:       procTimeout,
+		internalOpTimeout: internalOpTimeout,
+		logger:            logger,
+		onAlert:           onAlert,
+		onHeartbeat:       onHeartbeat,
+		traceKey:          traceKey,
 	}
 }
 
@@ -70,15 +76,12 @@ func (c *EventConsumer) recoveryLockKey() string {
 	return fmt.Sprintf("%s:lock:recover:event:{%s}", c.prefix, c.runner.GetName())
 }
 
-func (c *EventConsumer) alert(alertType core.AlertType, msg string) {
+func (c *EventConsumer) alert(data core.AlertData) {
 	if c.onAlert != nil {
-		c.onAlert(
-			core.AlertData{
-				Source:    core.AlertSourceEvent,
-				AlertType: alertType,
-				Msg:       msg,
-			},
-		)
+		if data.Source == "" {
+			data.Source = core.AlertSourceEvent
+		}
+		c.onAlert(data)
 	}
 }
 
@@ -91,6 +94,23 @@ func (c *EventConsumer) beat() {
 		Name: c.runner.GetName(),
 		At:   time.Now(),
 	})
+}
+
+func (c *EventConsumer) internalOpContext() (context.Context, context.CancelFunc) {
+	timeout := c.internalOpTimeout
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	return context.WithTimeout(context.Background(), timeout)
+}
+
+func (c *EventConsumer) recoverMaxDuration(lockTTL time.Duration) time.Duration {
+	maxDuration := c.procTimeout + lockTTL
+	minDuration := lockTTL + 30*time.Second
+	if maxDuration < minDuration {
+		maxDuration = minDuration
+	}
+	return maxDuration
 }
 
 // Start 启动消费者
@@ -132,6 +152,9 @@ func (c *EventConsumer) startupRecover(ctx context.Context) {
 	lockKey := c.recoveryLockKey()
 	// 锁 TTL 覆盖整个等待+恢复过程
 	lockTTL := c.procTimeout + 30*time.Second
+	if c.lockTTL > lockTTL {
+		lockTTL = c.lockTTL
+	}
 	ok, err := c.lock.Lock(ctx, lockKey, lockTTL)
 	if err != nil {
 		c.logger.Warnf("taskx: event[%s] recovery lock error: %v", c.runner.GetName(), err)
@@ -141,7 +164,13 @@ func (c *EventConsumer) startupRecover(ctx context.Context) {
 		// 其他实例已经在执行恢复
 		return
 	}
-	defer func() { _ = c.lock.Unlock(context.Background(), lockKey) }()
+	defer func() {
+		unlockCtx, unlockCancel := c.internalOpContext()
+		defer unlockCancel()
+		_ = c.lock.Unlock(unlockCtx, lockKey)
+	}()
+	stopRenew, lockLost := c.startRecoverRenewLoop(lockKey, lockTTL)
+	defer stopRenew()
 
 	// 等待 processingTimeout，让正在处理中的消息有足够时间完成
 	c.logger.Infof(
@@ -160,7 +189,29 @@ func (c *EventConsumer) startupRecover(ctx context.Context) {
 	// 若业务处理耗时超过 processingTimeout，可能发生重复投递，业务侧需保持幂等。
 	// 后续优化可考虑：processing 改为带时间戳结构、引入租约续期，或增加实例心跳辅助判断。
 	var totalRecovered int64
+	startedAt := time.Now()
+	maxDuration := c.recoverMaxDuration(lockTTL)
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-lockLost:
+			return
+		default:
+		}
+		if time.Since(startedAt) > maxDuration {
+			err := fmt.Errorf("taskx: event[%s] recovery exceeded max duration %v", c.runner.GetName(), maxDuration)
+			c.logger.Warnf("%v", err)
+			c.alert(
+				core.AlertData{
+					Source:       core.AlertSourceEvent,
+					AlertType:    core.AlertRecoveryExceeded,
+					RunnerName:   c.runner.GetName(),
+					RunnerResult: core.RunnerFuncResult{IsOk: false, Err: err},
+				},
+			)
+			return
+		}
 		recovered, err := c.driver.RecoverProcessing(ctx, c.processingKey(), c.pendingKey(), c.procTimeout)
 		if err != nil {
 			c.logger.Warnf("taskx: event[%s] recover processing error: %v", c.runner.GetName(), err)
@@ -174,6 +225,61 @@ func (c *EventConsumer) startupRecover(ctx context.Context) {
 	if totalRecovered > 0 {
 		c.logger.Infof("taskx: event[%s] recovered %d orphaned messages from processing", c.runner.GetName(), totalRecovered)
 	}
+}
+
+func (c *EventConsumer) startRecoverRenewLoop(lockKey string, lockTTL time.Duration) (func(), <-chan struct{}) {
+	lost := make(chan struct{})
+	interval := lockTTL / 3
+	if interval <= 0 {
+		interval = time.Second
+	}
+	if interval < 200*time.Millisecond {
+		interval = 200 * time.Millisecond
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer close(lost)
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				renewCtx, renewCancel := c.internalOpContext()
+				ok, err := c.lock.Renew(renewCtx, lockKey, lockTTL)
+				renewCancel()
+				if err != nil {
+					c.logger.Warnf("taskx: event[%s] recovery lock renew error: %v", c.runner.GetName(), err)
+					continue
+				}
+				if !ok {
+					err := fmt.Errorf("taskx: event[%s] recovery lock lost, duplicate recovery may happen", c.runner.GetName())
+					c.logger.Warnf("%v", err)
+					c.alert(
+						core.AlertData{
+							Source:       core.AlertSourceEvent,
+							AlertType:    core.AlertRecoveryLockLost,
+							RunnerName:   c.runner.GetName(),
+							RunnerResult: core.RunnerFuncResult{IsOk: false, Err: err},
+						},
+					)
+					return
+				}
+			}
+		}
+	}()
+
+	return func() {
+		cancel()
+		wg.Wait()
+	}, lost
 }
 
 func (c *EventConsumer) consume(ctx context.Context, id int) {
@@ -210,17 +316,32 @@ func (c *EventConsumer) process(ctx context.Context, raw string, id int) {
 		// Envelope 已损坏时，重复投递通常仍无法修复，且可能形成 poison message 无限循环。
 		// 因此这里告警后直接 Ack 删除；调用方应通过 OnAlert 排查生产端或历史脏数据。
 		c.logger.Errorf("taskx: event[%s][%d] decode error: %v, raw: %s", c.runner.GetName(), id, err, raw)
-		c.alert(core.AlertCorruptMessage, fmt.Sprintf("event[%s] decode failed: %v, raw: %s", c.runner.GetName(), err, raw))
-		if ackErr := c.driver.Ack(ctx, c.processingKey(), raw); ackErr != nil {
+		c.alert(
+			core.AlertData{
+				Source:       core.AlertSourceEvent,
+				AlertType:    core.AlertCorruptMessage,
+				RunnerName:   c.runner.GetName(),
+				RunnerResult: core.RunnerFuncResult{IsOk: false, Err: err},
+			},
+		)
+		opCtx, opCancel := c.internalOpContext()
+		defer opCancel()
+		if ackErr := c.driver.Ack(opCtx, c.processingKey(), raw); ackErr != nil {
 			c.logger.Errorf("taskx: event[%s][%d] ack(decode-err) failed: %v", c.runner.GetName(), id, ackErr)
 		}
 		return
 	}
 
-	result := c.runner.Run(ctx, env.Payload)
+	runCtx := ctx
+	if c.traceKey != "" {
+		runCtx = context.WithValue(runCtx, c.traceKey, env.ID)
+	}
+	result := c.runner.Run(runCtx, env.Payload)
 
 	if result.IsOk {
-		if ackErr := c.driver.Ack(ctx, c.processingKey(), raw); ackErr != nil {
+		opCtx, opCancel := c.internalOpContext()
+		defer opCancel()
+		if ackErr := c.driver.Ack(opCtx, c.processingKey(), raw); ackErr != nil {
 			c.logger.Errorf("taskx: event[%s][%d] ack failed: %v", c.runner.GetName(), id, ackErr)
 		}
 		return
@@ -228,17 +349,22 @@ func (c *EventConsumer) process(ctx context.Context, raw string, id int) {
 
 	c.logger.Warnf("taskx: event[%s][%d] run failed: %v", c.runner.GetName(), id, result.Err)
 	if result.NextTime > 0 {
-		// NextTime 仅对 DelayQueue 重试生效。EventQueue 当前不自动转投 DelayQueue，
-		// 这里保留即时重试语义并触发告警，避免调用方误以为已进入延迟队列。
 		c.alert(
-			core.AlertEventNextTimeIgnored,
-			fmt.Sprintf(
-				"event[%s] returned NextTime=%d; EventQueue ignores NextTime and will retry via pending, envelope_id=%s",
-				c.runner.GetName(),
-				result.NextTime,
-				env.ID,
-			),
+			core.AlertData{
+				Source:       core.AlertSourceEvent,
+				AlertType:    core.AlertEventNextTimeIgnored,
+				RunnerName:   c.runner.GetName(),
+				Envelope:     env,
+				RunnerResult: result,
+			},
 		)
+		// NextTime 属于业务改道信号；告警后直接 ack，不再回到 event 重试链路。
+		opCtx, opCancel := c.internalOpContext()
+		defer opCancel()
+		if ackErr := c.driver.Ack(opCtx, c.processingKey(), raw); ackErr != nil {
+			c.logger.Errorf("taskx: event[%s][%d] ack(next-time) failed: %v", c.runner.GetName(), id, ackErr)
+		}
+		return
 	}
 	env.RetryCount++
 
@@ -250,22 +376,26 @@ func (c *EventConsumer) process(ctx context.Context, raw string, id int) {
 			*c.option.MaxRetry,
 		)
 		c.alert(
-			core.AlertMaxRetryExhausted,
-			fmt.Sprintf(
-				"event[%s] max retry exhausted (%d), envelope_id=%s",
-				c.runner.GetName(),
-				*c.option.MaxRetry,
-				env.ID,
-			),
+			core.AlertData{
+				Source:       core.AlertSourceEvent,
+				AlertType:    core.AlertMaxRetryExhausted,
+				RunnerName:   c.runner.GetName(),
+				Envelope:     env,
+				RunnerResult: result,
+			},
 		)
-		if err := c.driver.MoveToDead(ctx, c.processingKey(), c.deadKey(), raw); err != nil {
+		opCtx, opCancel := c.internalOpContext()
+		defer opCancel()
+		if err := c.driver.MoveToDead(opCtx, c.processingKey(), c.deadKey(), raw); err != nil {
 			c.logger.Errorf("taskx: event[%s][%d] move-to-dead failed: %v", c.runner.GetName(), id, err)
 		}
 		return
 	}
 
 	newRaw := env.Encode()
-	if err := c.driver.RetryRequeue(ctx, c.processingKey(), c.pendingKey(), raw, newRaw); err != nil {
+	opCtx, opCancel := c.internalOpContext()
+	defer opCancel()
+	if err := c.driver.RetryRequeue(opCtx, c.processingKey(), c.pendingKey(), raw, newRaw); err != nil {
 		c.logger.Errorf("taskx: event[%s][%d] retry-requeue failed: %v", c.runner.GetName(), id, err)
 	}
 }

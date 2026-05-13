@@ -26,7 +26,7 @@ type RunnerFuncResult struct {
 	IsOk bool
 	Err  error
 
-	NextTime int64 // DelayQueue 失败重试的下次执行时间；EventQueue 返回该值时会告警并忽略
+	NextTime int64 // DelayQueue 失败重试的下次执行时间；EventQueue 返回该值时会告警并 Ack（不回 event 重试）
 }
 
 // TimerTaskRunner 定时任务接口
@@ -80,7 +80,10 @@ const (
 type AlertData struct {
 	Source    AlertSource
 	AlertType AlertType
-	Msg       string
+
+	RunnerName   string
+	Envelope     *Envelope
+	RunnerResult RunnerFuncResult
 }
 
 // AlertFunc 异常告警回调。当框架遇到无法自动处理的异常（如消息格式损坏、重试全部失败等）时调用，
@@ -115,10 +118,14 @@ const (
 	AlertCorruptMessage AlertType = "corrupt_message"
 	// AlertMaxRetryExhausted 消息重试次数耗尽，进入死信队列
 	AlertMaxRetryExhausted AlertType = "max_retry_exhausted"
-	// AlertEventNextTimeIgnored EventQueue 中返回 NextTime；当前仅告警并按 EventQueue 即时重试语义处理
+	// AlertEventNextTimeIgnored EventQueue 中返回 NextTime；仅告警，后续是否转入 DelayQueue 由业务决定
 	AlertEventNextTimeIgnored AlertType = "event_next_time_ignored"
 	// AlertTimerAllAttemptsFailed 定时任务所有重试均失败
 	AlertTimerAllAttemptsFailed AlertType = "timer_all_attempts_failed"
+	// AlertRecoveryLockLost 启动恢复过程中丢失分布式锁，可能导致多实例并发恢复
+	AlertRecoveryLockLost AlertType = "recovery_lock_lost"
+	// AlertRecoveryExceeded 启动恢复耗时超过上限，提前终止避免无限恢复
+	AlertRecoveryExceeded AlertType = "recovery_exceeded"
 )
 
 func (o RunnerOption) Normalize() RunnerOption {
@@ -165,21 +172,31 @@ func (o TimerTaskOption) WithDefaults(defaults TimerTaskOption) TimerTaskOption 
 	return o
 }
 
+type EnvelopeSource string
+
+const (
+	EnvelopeSourceEvent EnvelopeSource = "event_queue"
+	EnvelopeSourceTimer EnvelopeSource = "timer_queue"
+	EnvelopeSourceDelay EnvelopeSource = "delay_queue"
+)
+
 // Envelope 消息信封，包装 payload 并附带元数据（重试次数等）。
 // ID 保证每条消息的唯一性，避免 DelayQueue ZSet member 去重导致消息丢失。
 type Envelope struct {
-	ID         string `json:"id"`
-	Payload    string `json:"payload"`
-	RetryCount int    `json:"retry_count"`
-	CreatedAt  int64  `json:"created_at"`
+	ID         string         `json:"id"`
+	Payload    string         `json:"payload"`
+	RetryCount int            `json:"retry_count"`
+	CreatedAt  int64          `json:"created_at"`
+	Source     EnvelopeSource `json:"source"`
 }
 
-func NewEnvelope(payload string) *Envelope {
+func NewEnvelope(payload string, source EnvelopeSource) *Envelope {
 	return &Envelope{
 		ID:         uuid.NewString(),
 		Payload:    payload,
 		RetryCount: 0,
 		CreatedAt:  time.Now().Unix(),
+		Source:     source,
 	}
 }
 

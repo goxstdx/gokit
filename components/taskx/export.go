@@ -47,7 +47,7 @@ func newEventConsumerFactory(
 ) consumer {
 	return queue.NewEventConsumer(
 		runner, opt, eq, lk,
-		cfg.KeyPrefix, cfg.LockTTL, cfg.ProcessingTimeout, cfg.Logger, cfg.OnAlert, cfg.OnHeartbeat,
+		cfg.KeyPrefix, cfg.LockTTL, cfg.ProcessingTimeout, cfg.InternalOpTimeout, cfg.Logger, cfg.OnAlert, cfg.OnHeartbeat, cfg.TraceContextKey,
 	)
 }
 
@@ -58,12 +58,12 @@ func newDelayConsumerFactory(
 ) consumer {
 	return queue.NewDelayConsumer(
 		runner, opt, dq, lk,
-		cfg.KeyPrefix, cfg.LockTTL, cfg.PollInterval, cfg.ProcessingTimeout, cfg.Logger, cfg.OnAlert, cfg.OnHeartbeat,
+		cfg.KeyPrefix, cfg.LockTTL, cfg.PollInterval, cfg.ProcessingTimeout, cfg.InternalOpTimeout, cfg.Logger, cfg.OnAlert, cfg.OnHeartbeat, cfg.TraceContextKey,
 	)
 }
 
 func newTimerSchedulerFactory(lk driver.LockDriver, prefix string, cfg *ManagerConfig) timerScheduler {
-	return timer.NewScheduler(lk, prefix, cfg.LockTTL, cfg.Logger, cfg.OnAlert, cfg.OnHeartbeat)
+	return timer.NewScheduler(lk, prefix, cfg.LockTTL, cfg.InternalOpTimeout, cfg.TimerHeartbeatInterval, cfg.Logger, cfg.OnAlert, cfg.OnHeartbeat)
 }
 
 // RecoverEventDead 从事件队列死信中恢复消息，重置重试计数。
@@ -120,15 +120,16 @@ func recoverEventDeadWithReset(
 			if onAlert != nil {
 				onAlert(
 					core.AlertData{
-						Source:    core.AlertSourceEvent,
-						AlertType: core.AlertCorruptMessage,
-						Msg:       fmt.Sprintf("recover event dead: corrupt message skipped, raw: %s", raw),
+						Source:       core.AlertSourceEvent,
+						AlertType:    core.AlertCorruptMessage,
+						RunnerResult: core.RunnerFuncResult{IsOk: false, Err: fmt.Errorf("recover event dead: corrupt message skipped, raw: %s", raw)},
 					},
 				)
 			}
 			continue
 		}
 		env.RetryCount = 0
+		env.Source = core.EnvelopeSourceEvent
 		if err := drv.Push(ctx, pendingKey, env.Encode()); err != nil {
 			return recovered, err
 		}
@@ -161,15 +162,16 @@ func recoverDelayDeadWithReset(
 			if onAlert != nil {
 				onAlert(
 					core.AlertData{
-						Source:    core.AlertSourceDelay,
-						AlertType: core.AlertCorruptMessage,
-						Msg:       fmt.Sprintf("recover delay dead: corrupt message skipped, raw: %s", raw),
+						Source:       core.AlertSourceDelay,
+						AlertType:    core.AlertCorruptMessage,
+						RunnerResult: core.RunnerFuncResult{IsOk: false, Err: fmt.Errorf("recover delay dead: corrupt message skipped, raw: %s", raw)},
 					},
 				)
 			}
 			continue
 		}
 		env.RetryCount = 0
+		env.Source = core.EnvelopeSourceDelay
 		if err := drv.Add(ctx, pendingKey, env.Encode(), time.Now().Unix()); err != nil {
 			return recovered, err
 		}
