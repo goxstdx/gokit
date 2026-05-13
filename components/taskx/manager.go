@@ -232,23 +232,31 @@ func (m *Manager) Stop(ctx context.Context) error {
 
 // PublishEvent 发布事件到 EventQueue
 func (m *Manager) PublishEvent(ctx context.Context, runner core.QueueRunner) error {
-	if m.cfg.EventDriver == nil {
-		return fmt.Errorf("taskx: event queue driver not configured")
-	}
-	payload := runner.Marshal()
-	env := core.NewEnvelope(payload)
-	key := fmt.Sprintf("%s:event:{%s}:pending", m.cfg.KeyPrefix, runner.GetName())
-	return m.cfg.EventDriver.Push(ctx, key, env.Encode())
+	return m.PublishEventPayload(ctx, runner.GetName(), runner.Marshal())
 }
 
 // PublishDelay 发布延迟任务到 DelayQueue
 func (m *Manager) PublishDelay(ctx context.Context, runner core.QueueRunner, executeAt int64) error {
+	return m.PublishDelayPayload(ctx, runner.GetName(), runner.Marshal(), executeAt)
+}
+
+// PublishEventPayload 直接将 payload 包装为新消息并发布到 EventQueue。
+func (m *Manager) PublishEventPayload(ctx context.Context, runnerName string, payload string) error {
+	if m.cfg.EventDriver == nil {
+		return fmt.Errorf("taskx: event queue driver not configured")
+	}
+	env := core.NewEnvelope(payload)
+	key := fmt.Sprintf("%s:event:{%s}:pending", m.cfg.KeyPrefix, runnerName)
+	return m.cfg.EventDriver.Push(ctx, key, env.Encode())
+}
+
+// PublishDelayPayload 直接将 payload 包装为新消息并发布到 DelayQueue。
+func (m *Manager) PublishDelayPayload(ctx context.Context, runnerName string, payload string, executeAt int64) error {
 	if m.cfg.DelayDriver == nil {
 		return fmt.Errorf("taskx: delay queue driver not configured")
 	}
-	payload := runner.Marshal()
 	env := core.NewEnvelope(payload)
-	key := fmt.Sprintf("%s:delay:{%s}:pending", m.cfg.KeyPrefix, runner.GetName())
+	key := fmt.Sprintf("%s:delay:{%s}:pending", m.cfg.KeyPrefix, runnerName)
 	return m.cfg.DelayDriver.Add(ctx, key, env.Encode(), executeAt)
 }
 
@@ -276,6 +284,38 @@ func (m *Manager) HealthSnapshot() ManagerHealthSnapshot {
 		cp.Delay[k] = v
 	}
 	return cp
+}
+
+// HealthOK 返回监听链路是否健康，可直接用于健康检查。
+func (m *Manager) HealthOK() bool {
+	snap := m.HealthSnapshot()
+	if !snap.Running {
+		return false
+	}
+
+	eventEnabled := m.cfg.EventDriver != nil && m.eventFactory != nil
+	delayEnabled := m.cfg.DelayDriver != nil && m.delayFactory != nil
+	timerEnabled := m.cfg.LockDriver != nil && m.timerFactory != nil && len(m.registry.GetTimerTasks()) > 0
+
+	if eventEnabled {
+		for _, st := range snap.Event {
+			if !st.Alive || st.LenError != "" {
+				return false
+			}
+		}
+	}
+	if delayEnabled {
+		for _, st := range snap.Delay {
+			if !st.Alive || st.LenError != "" {
+				return false
+			}
+		}
+	}
+	if timerEnabled && !snap.Timer.Alive {
+		return false
+	}
+
+	return true
 }
 
 func (m *Manager) stopConsumersLocked() {

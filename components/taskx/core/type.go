@@ -55,9 +55,9 @@ const (
 	// TimerConcurrencyForbidOverlap 全局串行：同一 task 上一轮未结束时，下一轮直接跳过
 	// 多机下通过固定锁 key + 自动续租降低长任务重入风险，但极端情况下仍建议业务保持幂等。
 	TimerConcurrencyForbidOverlap TimerConcurrencyPolicy = "forbid_overlap"
-	// TimerConcurrencyAllowOverlap 仅对同一次 cron tick 做分布式去重，不阻止不同触发时刻重叠执行
-	// 多机下依赖各节点时钟大体一致；如存在明显时钟漂移，同一 tick 仍可能出现重复执行。
-	TimerConcurrencyAllowOverlap TimerConcurrencyPolicy = "allow_overlap"
+	// TimerConcurrencySinglePerTick 每个 cron tick 全局至多执行一次，不阻止不同 tick 重叠执行
+	// 适用于“同一轮只执行一次”的诉求；仍依赖各节点时钟大体一致，业务侧建议保持幂等。
+	TimerConcurrencySinglePerTick TimerConcurrencyPolicy = "single_per_tick"
 )
 
 // IntPtr 返回 int 值的指针，用于设置 MaxRetry 等可选字段
@@ -139,7 +139,7 @@ func (o TimerTaskOption) Normalize() TimerTaskOption {
 	}
 	if o.ConcurrencyPolicy != nil {
 		switch *o.ConcurrencyPolicy {
-		case TimerConcurrencyForbidOverlap, TimerConcurrencyAllowOverlap:
+		case TimerConcurrencyForbidOverlap, TimerConcurrencySinglePerTick:
 		default:
 			o.ConcurrencyPolicy = nil
 		}

@@ -83,6 +83,7 @@ func (r *testRunner) Received() []string {
 type testTimerRunner struct {
 	name    string
 	cronExp string
+	sleep   time.Duration
 	count   atomic.Int64
 }
 
@@ -90,6 +91,9 @@ func (r *testTimerRunner) GetName() string { return r.name }
 func (r *testTimerRunner) GetCron() string { return r.cronExp }
 func (r *testTimerRunner) Run(_ context.Context) core.RunnerFuncResult {
 	r.count.Add(1)
+	if r.sleep > 0 {
+		time.Sleep(r.sleep)
+	}
 	return core.RunnerFuncResult{IsOk: true}
 }
 
@@ -334,6 +338,7 @@ func TestTimerTaskDistributedLock(t *testing.T) {
 		task := &testTimerRunner{
 			name:    "timer-lock-test",
 			cronExp: "*/1 * * * * *", // 每秒执行
+			sleep:   1200 * time.Millisecond,
 		}
 		// 让两个 runner 共享同一个计数器
 		reg := taskx.NewRegistry()
@@ -388,7 +393,7 @@ func TestTimerTaskOptionFallbackAndOverride(t *testing.T) {
 	defer cleanKeys(ctx, rdb, prefix)
 
 	globalTask := &testConcurrentTimerRunner{
-		name:    "timer-global-allow-overlap",
+		name:    "timer-global-single-per-tick",
 		cronExp: "*/1 * * * * *",
 		sleep:   1500 * time.Millisecond,
 	}
@@ -414,7 +419,7 @@ func TestTimerTaskOptionFallbackAndOverride(t *testing.T) {
 		taskx.WithLogger(log),
 		taskx.WithLockTTL(5*time.Second),
 		taskx.WithDefaultTimerTaskOption(core.TimerTaskOption{
-			ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencyAllowOverlap),
+			ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencySinglePerTick),
 		}),
 	)
 	if err := mgr.Start(ctx); err != nil {
@@ -428,7 +433,7 @@ func TestTimerTaskOptionFallbackAndOverride(t *testing.T) {
 	}
 
 	if got := globalTask.maxConcurrent.Load(); got < 2 {
-		t.Fatalf("expected global default allow_overlap to permit overlapping runs, max concurrent=%d", got)
+		t.Fatalf("expected global default single_per_tick to permit overlapping runs across ticks, max concurrent=%d", got)
 	}
 	if got := overrideTask.maxConcurrent.Load(); got > 1 {
 		t.Fatalf("expected per-task forbid_overlap to override global default, max concurrent=%d", got)
@@ -968,5 +973,73 @@ func TestManagerHealthSnapshot(t *testing.T) {
 	stopped := mgr.HealthSnapshot()
 	if stopped.Running {
 		t.Fatalf("expected running=false after stop, got %+v", stopped)
+	}
+}
+
+// ============================================================
+// 测试：业务侧可将 event payload 作为新消息直接转投 delay
+// ============================================================
+func TestEventPayloadDirectRepublishToDelay(t *testing.T) {
+	rdb := newTestRedis()
+	skipIfNoRedis(t, rdb)
+	log := newTestLogger(t)
+
+	ctx := context.Background()
+	prefix := fmt.Sprintf("test_%d", time.Now().UnixNano())
+	defer cleanKeys(ctx, rdb, prefix)
+
+	var mgr *taskx.Manager
+	gotDelayPayload := make(chan string, 1)
+
+	eventRunner := newTestRunner(
+		"evt-direct", func(ctx context.Context, payload string) core.RunnerFuncResult {
+			nextTime := time.Now().Add(1 * time.Second).Unix()
+			if err := mgr.PublishDelayPayload(ctx, "delay-direct", payload, nextTime); err != nil {
+				return core.RunnerFuncResult{IsOk: false, Err: err}
+			}
+			return core.RunnerFuncResult{IsOk: true}
+		},
+	)
+	delayRunner := newTestRunner(
+		"delay-direct", func(_ context.Context, payload string) core.RunnerFuncResult {
+			select {
+			case gotDelayPayload <- payload:
+			default:
+			}
+			return core.RunnerFuncResult{IsOk: true}
+		},
+	)
+
+	reg := taskx.NewRegistry()
+	if err := reg.RegisterEventRunner(eventRunner, core.RunnerOption{ConsumerCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.RegisterDelayRunner(delayRunner, core.RunnerOption{ConsumerCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr = taskx.NewRedisManager(
+		rdb, reg,
+		taskx.WithKeyPrefix(prefix),
+		taskx.WithLogger(log),
+		taskx.WithPollInterval(100*time.Millisecond),
+	)
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = mgr.Stop(context.Background()) }()
+
+	rawPayload := `{"order_id":"o123","trace_id":"t999","retry":1}`
+	if err := mgr.PublishEventPayload(ctx, "evt-direct", rawPayload); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case got := <-gotDelayPayload:
+		if got != rawPayload {
+			t.Fatalf("payload changed after republish, got=%q want=%q", got, rawPayload)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("timeout waiting for delay payload")
 	}
 }

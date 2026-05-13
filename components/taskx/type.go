@@ -19,7 +19,7 @@ type AlertSource = core.AlertSource
 
 const (
 	TimerConcurrencyForbidOverlap = core.TimerConcurrencyForbidOverlap
-	TimerConcurrencyAllowOverlap  = core.TimerConcurrencyAllowOverlap
+	TimerConcurrencySinglePerTick = core.TimerConcurrencySinglePerTick
 )
 
 const (

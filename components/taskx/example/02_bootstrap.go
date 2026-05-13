@@ -19,7 +19,7 @@ import (
 // 多机部署推荐：
 //  1. 关键任务默认使用 forbid_overlap。
 //  2. WithLockTTL 建议大于常规任务执行时长；即使框架会自动续租，也应避免 TTL 过小。
-//  3. 如果业务允许跨轮次重叠执行，再单独对该任务显式配置 allow_overlap。
+//  3. 如果业务诉求是“每个 tick 全局仅执行一次”，可单独对该任务显式配置 single_per_tick。
 //  4. 无论哪种策略，任务逻辑本身都建议保持幂等。
 func BootstrapExample() {
 	log, _ := logger_factory.NewLogger(logger_factory.Config{
@@ -40,7 +40,7 @@ func BootstrapExample() {
 		core.RunnerOption{MaxRetry: core.IntPtr(3), ConsumerCount: 2},
 	)
 	_ = registry.RegisterTimerTask(&ReportTimerTask{}, core.TimerTaskOption{
-		ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencyAllowOverlap),
+		ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencySinglePerTick),
 	})
 
 	mgr := taskx.NewRedisManager(rdb, registry,

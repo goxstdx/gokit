@@ -190,14 +190,14 @@ Cron 触发 ──► 按并发策略生成锁 Key ──► 抢分布式锁 ─
 支持两种并发策略：
 
 - `forbid_overlap`：同一 task 上一轮未结束时，下一轮直接跳过
-- `allow_overlap`：仅对同一次 cron tick 做分布式去重，不阻止不同触发时刻重叠执行
+- `single_per_tick`：每个 cron tick 在集群内最多执行一次，不阻止不同触发时刻重叠执行
 
 单个 task 可以通过 `RegisterTimerTask(..., TimerTaskOption{...})` 单独指定；未指定时继承 `WithDefaultTimerTaskOption(...)` 的全局默认值。
 
 多机部署注意事项：
 
 - `forbid_overlap`：框架会在任务执行期间自动续租锁，降低长任务因 `LockTTL` 到期而被其他实例重入的风险。
-- `allow_overlap`：锁 key 基于“计划触发时间（cron tick）”生成，而不是简单使用 `time.Now()`，可降低同一轮任务因调度抖动产生重复执行的概率。
+- `single_per_tick`：锁 key 基于“计划触发时间（cron tick）”生成，而不是简单使用 `time.Now()`，可降低同一轮任务因调度抖动产生重复执行的概率。
 - 以上策略都仍依赖各实例机器时钟大体一致；若发生明显时钟漂移、Redis 不可用、长时间 STW/网络抖动等极端情况，仍可能出现重复执行，业务侧应保持幂等。
 
 ## 使用示例
@@ -208,6 +208,25 @@ Cron 触发 ──► 按并发策略生成锁 Key ──► 抢分布式锁 ─
 - `example/02_bootstrap.go`：注册、启动、发布、优雅退出
 - `example/03_recovery.go`：死信恢复
 - `example/04_custom_driver.go`：自定义驱动接入
+
+### 直接投递 payload（新消息）
+
+当业务已经拿到原始 payload，且希望不解析直接重新入队（会生成新的 Envelope ID）时，可使用：
+
+```go
+// 直接投递到 event
+if err := mgr.PublishEventPayload(ctx, "event-runner-name", rawPayload); err != nil {
+    return err
+}
+
+// 直接投递到 delay（executeAt 为秒级时间戳）
+if err := mgr.PublishDelayPayload(ctx, "delay-runner-name", rawPayload, executeAt); err != nil {
+    return err
+}
+```
+
+典型场景：EventQueue 中业务根据 `Run` 结果决定是否转 DelayQueue。  
+可以直接把当前 `payload` 原样投递到 delay，避免重复解析/重组 payload。
 
 ## 配置参数
 
@@ -229,9 +248,9 @@ Cron 触发 ──► 按并发策略生成锁 Key ──► 抢分布式锁 ─
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
 | `MaxRetry` | 继承全局，最终默认 `0` | 执行失败重试次数 |
-| `ConcurrencyPolicy` | 继承全局，最终默认 `forbid_overlap` | `forbid_overlap` / `allow_overlap` |
+| `ConcurrencyPolicy` | 继承全局，最终默认 `forbid_overlap` | `forbid_overlap` / `single_per_tick` |
 
-> 建议：关键任务默认使用 `forbid_overlap`；若业务确实允许跨轮次重叠执行，再显式配置为 `allow_overlap`，同时保证任务幂等。
+> 建议：关键任务默认使用 `forbid_overlap`；若诉求是“每个 tick 全局只执行一次”，使用 `single_per_tick`。无论使用哪种策略，业务侧都建议使用幂等键（如业务主键或 `task_name + tick`）做去重兜底。
 
 ## 监听存活监控
 
@@ -263,6 +282,14 @@ for name, st := range snap.Delay {
 log.Infof("timer: alive=%v last_beat=%v", snap.Timer.Alive, snap.Timer.LastBeatAt)
 ```
 
+也可以直接用：
+
+```go
+if !mgr.HealthOK() {
+    // 统一健康判定失败
+}
+```
+
 ## Redis Key 命名规范
 
 ```
@@ -273,7 +300,7 @@ log.Infof("timer: alive=%v last_beat=%v", snap.Timer.Alive, snap.Timer.LastBeatA
 {prefix}:delay:{runner_name}:processing     # DelayQueue 执行中
 {prefix}:delay:{runner_name}:dead           # DelayQueue 死信
 {prefix}:lock:timer:{runner_name}           # TimerTask forbid_overlap 锁
-{prefix}:lock:timer:{runner_name}:{slot}    # TimerTask allow_overlap 锁（slot 为 cron tick 时间窗）
+{prefix}:lock:timer:{runner_name}:{slot}    # TimerTask single_per_tick 锁（slot 为 cron tick 时间窗）
 {prefix}:lock:recover:event:{runner_name}   # EventQueue 恢复锁
 {prefix}:lock:recover:delay:{runner_name}   # DelayQueue 恢复锁
 ```

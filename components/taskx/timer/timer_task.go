@@ -77,8 +77,8 @@ func (s *Scheduler) beat() {
 //
 // 多机语义说明：
 //  1. forbid_overlap：使用固定锁 key，并在执行期间自动续租，降低长任务因 TTL 到期而被其他实例重入的风险。
-//  2. allow_overlap：使用“计划触发时间”生成锁 key，仅对同一次 cron tick 做去重，不阻止不同 tick 重叠执行。
-//  3. 两种策略都仍依赖各机器时钟大体一致；如发生长时间 STW、网络抖动、Redis 不可用或时钟明显漂移，仍可能出现重复执行，业务应保持幂等。
+//  2. single_per_tick：使用“计划触发时间”生成锁 key，仅对同一次 cron tick 做去重，不阻止不同 tick 重叠执行。
+//  3. 两类策略都仍依赖各机器时钟大体一致；如发生长时间 STW、网络抖动、Redis 不可用或时钟明显漂移，仍可能出现重复执行，业务应保持幂等。
 func (s *Scheduler) Register(task core.TimerTaskRunner, opt core.TimerTaskOption) error {
 	name := task.GetName()
 	schedule, err := s.parser.Parse(task.GetCron())
@@ -193,7 +193,7 @@ func (s *Scheduler) startRenewLoop(lockKey string) func() {
 
 func (s *Scheduler) lockKey(name string, policy core.TimerConcurrencyPolicy, scheduledAt time.Time) string {
 	switch policy {
-	case core.TimerConcurrencyAllowOverlap:
+	case core.TimerConcurrencySinglePerTick:
 		return fmt.Sprintf("%s:lock:timer:{%s}:%d", s.prefix, name, scheduledAt.UTC().Unix())
 	default:
 		return fmt.Sprintf("%s:lock:timer:{%s}", s.prefix, name)
