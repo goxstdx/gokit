@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
 )
 
 // EventEntry 事件队列注册条目
@@ -41,9 +42,13 @@ func NewRegistry() *Registry {
 	}
 }
 
+func GetDefaultEventOption() core.RunnerOption {
+	return core.RunnerOption{MaxRetry: core.IntPtr(defaults.EventMaxRetry), ConsumerCount: defaults.EventConsumerCount}
+}
+
 // RegisterEventRunner 注册事件队列 Runner
 func (r *Registry) RegisterEventRunner(runner core.QueueRunner, opts ...core.RunnerOption) error {
-	opt := core.RunnerOption{MaxRetry: core.IntPtr(3), ConsumerCount: 1}
+	opt := GetDefaultEventOption()
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
@@ -60,9 +65,13 @@ func (r *Registry) RegisterEventRunner(runner core.QueueRunner, opts ...core.Run
 	return nil
 }
 
+func GetDefaultDelayOption() core.RunnerOption {
+	return core.RunnerOption{MaxRetry: core.IntPtr(defaults.DelayMaxRetry), ConsumerCount: defaults.DelayConsumerCount}
+}
+
 // RegisterDelayRunner 注册延迟队列 Runner
 func (r *Registry) RegisterDelayRunner(runner core.QueueRunner, opts ...core.RunnerOption) error {
-	opt := core.RunnerOption{MaxRetry: core.IntPtr(3), ConsumerCount: 1}
+	opt := GetDefaultDelayOption()
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
@@ -77,6 +86,10 @@ func (r *Registry) RegisterDelayRunner(runner core.QueueRunner, opts ...core.Run
 	}
 	r.delayRunners[name] = &DelayEntry{Runner: runner, Option: opt}
 	return nil
+}
+
+func GetDefaultTimerTaskOption() core.TimerTaskOption {
+	return core.TimerTaskOption{}
 }
 
 // RegisterTimerTask 注册定时任务

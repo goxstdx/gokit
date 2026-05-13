@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
 )
 
 // QueueRunner 队列任务接口，EventQueue 和 DelayQueue 共用
@@ -33,7 +34,14 @@ type RunnerFuncResult struct {
 type TimerTaskRunner interface {
 	GetName() string
 	GetCron() string
-	Run(ctx context.Context) RunnerFuncResult
+	GetTaskParam() string
+	Run(ctx context.Context, payload string) RunnerFuncResult
+}
+
+// TimerExecuteRequest 手动执行定时任务请求参数
+type TimerExecuteRequest struct {
+	Name    string // 要执行的任务名，对应 TimerTaskRunner.GetName()
+	Payload string // 透传给 TimerTaskRunner.Run
 }
 
 // RunnerOption 队列 Runner 注册选项
@@ -129,14 +137,18 @@ const (
 )
 
 func (o RunnerOption) Normalize() RunnerOption {
+	// 默认不重试
 	if o.MaxRetry == nil {
-		o.MaxRetry = IntPtr(3)
+		o.MaxRetry = IntPtr(defaults.DefaultMaxRetry)
 	} else if *o.MaxRetry < 0 {
-		o.MaxRetry = IntPtr(0)
+		o.MaxRetry = IntPtr(defaults.DefaultMaxRetry)
 	}
+
+	// 默认单消费者
 	if o.ConsumerCount <= 0 {
 		o.ConsumerCount = 1
 	}
+
 	return o
 }
 

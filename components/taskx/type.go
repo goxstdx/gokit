@@ -8,6 +8,7 @@ type QueueRunner = core.QueueRunner
 type RunnerFunc = core.RunnerFunc
 type RunnerFuncResult = core.RunnerFuncResult
 type TimerTaskRunner = core.TimerTaskRunner
+type TimerExecuteRequest = core.TimerExecuteRequest
 type RunnerOption = core.RunnerOption
 type TimerTaskOption = core.TimerTaskOption
 type TimerConcurrencyPolicy = core.TimerConcurrencyPolicy

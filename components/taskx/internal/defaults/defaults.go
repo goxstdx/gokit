@@ -25,3 +25,13 @@ const (
 )
 
 const RecoverBatchSize int64 = 1000
+
+const (
+	DefaultMaxRetry = 0
+
+	EventMaxRetry      = 0
+	EventConsumerCount = 1
+
+	DelayMaxRetry      = 1
+	DelayConsumerCount = 1
+)

@@ -46,9 +46,10 @@ func (r failingQueueRunner) Run(context.Context, string) core.RunnerFuncResult {
 
 type internalTimerRunner struct{ name string }
 
-func (r internalTimerRunner) GetName() string { return r.name }
-func (r internalTimerRunner) GetCron() string { return "*/1 * * * * *" }
-func (r internalTimerRunner) Run(context.Context) core.RunnerFuncResult {
+func (r internalTimerRunner) GetName() string      { return r.name }
+func (r internalTimerRunner) GetCron() string      { return "*/1 * * * * *" }
+func (r internalTimerRunner) GetTaskParam() string { return "" }
+func (r internalTimerRunner) Run(context.Context, string) core.RunnerFuncResult {
 	return core.RunnerFuncResult{IsOk: true}
 }
 
@@ -145,6 +146,40 @@ func (internalLockDriver) Lock(context.Context, string, time.Duration) (bool, er
 func (internalLockDriver) Unlock(context.Context, string) error { return nil }
 func (internalLockDriver) Renew(context.Context, string, time.Duration) (bool, error) {
 	return true, nil
+}
+
+type trackingLockDriver struct {
+	lockKey   string
+	unlockKey string
+}
+
+func (d *trackingLockDriver) Lock(_ context.Context, key string, _ time.Duration) (bool, error) {
+	d.lockKey = key
+	return true, nil
+}
+
+func (d *trackingLockDriver) Unlock(_ context.Context, key string) error {
+	d.unlockKey = key
+	return nil
+}
+
+func (d *trackingLockDriver) Renew(context.Context, string, time.Duration) (bool, error) {
+	return true, nil
+}
+
+type manualExecuteTimerRunner struct {
+	name        string
+	runCount    atomic.Int64
+	lastPayload string
+}
+
+func (r *manualExecuteTimerRunner) GetName() string      { return r.name }
+func (r *manualExecuteTimerRunner) GetCron() string      { return "*/1 * * * * *" }
+func (r *manualExecuteTimerRunner) GetTaskParam() string { return "cron-default" }
+func (r *manualExecuteTimerRunner) Run(_ context.Context, payload string) core.RunnerFuncResult {
+	r.lastPayload = payload
+	r.runCount.Add(1)
+	return core.RunnerFuncResult{IsOk: true}
 }
 
 type internalConsumer struct {
@@ -384,5 +419,46 @@ func TestStopAlertDispatcherDrainDoesNotInvokeExternalHandler(t *testing.T) {
 	}
 	if mgr.cfg.OnAlert == nil {
 		t.Fatal("expected original alert handler to be restored")
+	}
+}
+
+func TestExecuteTimerTaskOnceUsesFixedLockAndRequestPayload(t *testing.T) {
+	reg := NewRegistry()
+	runner := &manualExecuteTimerRunner{name: "manual-exec"}
+	if err := reg.RegisterTimerTask(runner); err != nil {
+		t.Fatal(err)
+	}
+
+	lockDrv := &trackingLockDriver{}
+	mgr := NewManager(
+		reg,
+		WithLogger(newInternalTestLogger(t)),
+		WithLockDriver(lockDrv),
+		WithKeyPrefix("custom-prefix"),
+	)
+
+	result, err := mgr.ExecuteTimerTaskOnce(
+		context.Background(),
+		core.TimerExecuteRequest{Name: "manual-exec", Payload: "manual-param"},
+	)
+	if err != nil {
+		t.Fatalf("execute timer task once: %v", err)
+	}
+	if !result.IsOk {
+		t.Fatalf("expected manual execute success, got result=%+v", result)
+	}
+	if got := runner.runCount.Load(); got != 1 {
+		t.Fatalf("expected run count=1, got %d", got)
+	}
+	if runner.lastPayload != "manual-param" {
+		t.Fatalf("expected payload from request, got %q", runner.lastPayload)
+	}
+
+	wantKey := "custom-prefix:lock:timer:{manual-exec}"
+	if lockDrv.lockKey != wantKey {
+		t.Fatalf("unexpected lock key: got %q want %q", lockDrv.lockKey, wantKey)
+	}
+	if lockDrv.unlockKey != wantKey {
+		t.Fatalf("unexpected unlock key: got %q want %q", lockDrv.unlockKey, wantKey)
 	}
 }

@@ -87,9 +87,10 @@ type testTimerRunner struct {
 	count   atomic.Int64
 }
 
-func (r *testTimerRunner) GetName() string { return r.name }
-func (r *testTimerRunner) GetCron() string { return r.cronExp }
-func (r *testTimerRunner) Run(_ context.Context) core.RunnerFuncResult {
+func (r *testTimerRunner) GetName() string      { return r.name }
+func (r *testTimerRunner) GetCron() string      { return r.cronExp }
+func (r *testTimerRunner) GetTaskParam() string { return "" }
+func (r *testTimerRunner) Run(_ context.Context, _ string) core.RunnerFuncResult {
 	r.count.Add(1)
 	if r.sleep > 0 {
 		time.Sleep(r.sleep)
@@ -105,9 +106,10 @@ type testConcurrentTimerRunner struct {
 	maxConcurrent atomic.Int64
 }
 
-func (r *testConcurrentTimerRunner) GetName() string { return r.name }
-func (r *testConcurrentTimerRunner) GetCron() string { return r.cronExp }
-func (r *testConcurrentTimerRunner) Run(_ context.Context) core.RunnerFuncResult {
+func (r *testConcurrentTimerRunner) GetName() string      { return r.name }
+func (r *testConcurrentTimerRunner) GetCron() string      { return r.cronExp }
+func (r *testConcurrentTimerRunner) GetTaskParam() string { return "" }
+func (r *testConcurrentTimerRunner) Run(_ context.Context, _ string) core.RunnerFuncResult {
 	cur := r.inFlight.Add(1)
 	for {
 		max := r.maxConcurrent.Load()

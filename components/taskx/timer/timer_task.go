@@ -152,12 +152,13 @@ func (s *Scheduler) runTask(name string, task core.TimerTaskRunner, opt core.Tim
 	}()
 
 	maxAttempts := 1 + *opt.MaxRetry
+	payload := task.GetTaskParam()
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if ctx.Err() != nil {
 			s.logger.Infof("taskx: timer[%s] cancelled, stopping retries", name)
 			return
 		}
-		result := task.Run(ctx)
+		result := task.Run(ctx, payload)
 		if result.IsOk {
 			return
 		}
