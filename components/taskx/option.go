@@ -20,6 +20,7 @@ type ManagerConfig struct {
 	LockTTL           time.Duration
 	ProcessingTimeout time.Duration
 	RecoverBatchSize  int64 // 崩溃恢复每批次移动的消息数量
+	DefaultTimerTask  core.TimerTaskOption
 	Logger            core.Logger
 }
 
@@ -30,7 +31,11 @@ func defaultConfig() *ManagerConfig {
 		LockTTL:           30 * time.Second,
 		ProcessingTimeout: 5 * time.Minute,
 		RecoverBatchSize:  1000,
-		Logger:            nil, // 调用方必须提供 Logger
+		DefaultTimerTask: core.TimerTaskOption{
+			MaxRetry:          core.IntPtr(0),
+			ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencyForbidOverlap),
+		},
+		Logger: nil, // 调用方必须提供 Logger
 	}
 }
 
@@ -64,6 +69,10 @@ func WithProcessingTimeout(d time.Duration) Option {
 
 func WithRecoverBatchSize(n int64) Option {
 	return func(c *ManagerConfig) { c.RecoverBatchSize = n }
+}
+
+func WithDefaultTimerTaskOption(opt core.TimerTaskOption) Option {
+	return func(c *ManagerConfig) { c.DefaultTimerTask = opt.Normalize() }
 }
 
 func WithLogger(l core.Logger) Option {

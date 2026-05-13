@@ -137,7 +137,8 @@ func (m *Manager) Start(ctx context.Context) error {
 	if m.cfg.LockDriver != nil && m.timerFactory != nil {
 		s := m.timerFactory(m.cfg.LockDriver, m.cfg.KeyPrefix, m.cfg)
 		for _, entry := range m.registry.GetTimerTasks() {
-			if err := s.Register(entry.Task, entry.Option); err != nil {
+			opt := entry.Option.WithDefaults(m.cfg.DefaultTimerTask)
+			if err := s.Register(entry.Task, opt); err != nil {
 				m.stopConsumersLocked()
 				return fmt.Errorf("taskx: register timer[%s]: %w", entry.Task.GetName(), err)
 			}
@@ -178,7 +179,7 @@ func (m *Manager) PublishEvent(ctx context.Context, runner core.QueueRunner) err
 	if m.cfg.EventDriver == nil {
 		return fmt.Errorf("taskx: event queue driver not configured")
 	}
-	payload := runner.Marshal(runner)
+	payload := runner.Marshal()
 	env := core.NewEnvelope(payload)
 	key := fmt.Sprintf("%s:event:{%s}:pending", m.cfg.KeyPrefix, runner.GetName())
 	return m.cfg.EventDriver.Push(ctx, key, env.Encode())
@@ -189,7 +190,7 @@ func (m *Manager) PublishDelay(ctx context.Context, runner core.QueueRunner, exe
 	if m.cfg.DelayDriver == nil {
 		return fmt.Errorf("taskx: delay queue driver not configured")
 	}
-	payload := runner.Marshal(runner)
+	payload := runner.Marshal()
 	env := core.NewEnvelope(payload)
 	key := fmt.Sprintf("%s:delay:{%s}:pending", m.cfg.KeyPrefix, runner.GetName())
 	return m.cfg.DelayDriver.Add(ctx, key, env.Encode(), executeAt)

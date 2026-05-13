@@ -15,6 +15,7 @@ import (
 // Scheduler 定时任务调度器
 type Scheduler struct {
 	cron    *cron.Cron
+	parser  cron.Parser
 	lock    driver.LockDriver
 	prefix  string
 	lockTTL time.Duration
@@ -28,6 +29,7 @@ type Scheduler struct {
 func NewScheduler(lk driver.LockDriver, prefix string, lockTTL time.Duration, logger core.Logger) *Scheduler {
 	return &Scheduler{
 		cron:    cron.New(cron.WithSeconds(), cron.WithChain(cron.Recover(cronLogger{logger: logger}))),
+		parser:  cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor),
 		lock:    lk,
 		prefix:  prefix,
 		lockTTL: lockTTL,
@@ -35,28 +37,40 @@ func NewScheduler(lk driver.LockDriver, prefix string, lockTTL time.Duration, lo
 	}
 }
 
-// Register 注册一个定时任务
+// Register 注册一个定时任务。
+//
+// 多机语义说明：
+//  1. forbid_overlap：使用固定锁 key，并在执行期间自动续租，降低长任务因 TTL 到期而被其他实例重入的风险。
+//  2. allow_overlap：使用“计划触发时间”生成锁 key，仅对同一次 cron tick 做去重，不阻止不同 tick 重叠执行。
+//  3. 两种策略都仍依赖各机器时钟大体一致；如发生长时间 STW、网络抖动、Redis 不可用或时钟明显漂移，仍可能出现重复执行，业务应保持幂等。
 func (s *Scheduler) Register(task core.TimerTaskRunner, opt core.TimerTaskOption) error {
-	lockKey := fmt.Sprintf("%s:lock:timer:{%s}", s.prefix, task.GetName())
 	name := task.GetName()
-
-	entryID, err := s.cron.AddFunc(task.GetCron(), func() {
-		s.runTask(name, task, opt, lockKey)
-	})
+	schedule, err := s.parser.Parse(task.GetCron())
 	if err != nil {
-		return fmt.Errorf("taskx: add cron %q: %w", name, err)
+		return fmt.Errorf("taskx: parse cron %q: %w", name, err)
 	}
+	job := &timerJob{
+		scheduler: s,
+		name:      name,
+		task:      task,
+		opt:       opt,
+		schedule:  schedule,
+		nextTick:  schedule.Next(time.Now().UTC()),
+	}
+
+	entryID := s.cron.Schedule(schedule, job)
 
 	s.mu.Lock()
 	s.entries = append(s.entries, entryID)
 	s.mu.Unlock()
 
-	s.logger.Infof("taskx: timer[%s] registered with cron=%q", name, task.GetCron())
+	s.logger.Infof("taskx: timer[%s] registered with cron=%q policy=%s", name, task.GetCron(), *opt.ConcurrencyPolicy)
 	return nil
 }
 
-func (s *Scheduler) runTask(name string, task core.TimerTaskRunner, opt core.TimerTaskOption, lockKey string) {
+func (s *Scheduler) runTask(name string, task core.TimerTaskRunner, opt core.TimerTaskOption, scheduledAt time.Time) {
 	ctx := context.Background()
+	lockKey := s.lockKey(name, *opt.ConcurrencyPolicy, scheduledAt)
 
 	ok, err := s.lock.Lock(ctx, lockKey, s.lockTTL)
 	if err != nil {
@@ -66,7 +80,12 @@ func (s *Scheduler) runTask(name string, task core.TimerTaskRunner, opt core.Tim
 	if !ok {
 		return
 	}
+	stopRenew := func() {}
+	if *opt.ConcurrencyPolicy == core.TimerConcurrencyForbidOverlap {
+		stopRenew = s.startRenewLoop(lockKey)
+	}
 	defer func() {
+		stopRenew()
 		_ = s.lock.Unlock(ctx, lockKey)
 	}()
 
@@ -79,6 +98,89 @@ func (s *Scheduler) runTask(name string, task core.TimerTaskRunner, opt core.Tim
 		s.logger.Warnf("taskx: timer[%s] attempt %d/%d failed: %v", name, attempt+1, maxAttempts, result.Err)
 	}
 	s.logger.Errorf("taskx: timer[%s] all %d attempts failed", name, maxAttempts)
+}
+
+func (s *Scheduler) startRenewLoop(lockKey string) func() {
+	interval := s.lockTTL / 3
+	if interval <= 0 {
+		interval = time.Second
+	}
+	if interval < 200*time.Millisecond {
+		interval = 200 * time.Millisecond
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				ok, err := s.lock.Renew(ctx, lockKey, s.lockTTL)
+				if err != nil {
+					s.logger.Warnf("taskx: timer renew lock error, key=%s err=%v", lockKey, err)
+					continue
+				}
+				if !ok {
+					s.logger.Warnf("taskx: timer lock lost during execution, key=%s; duplicate execution may occur in multi-instance deployment", lockKey)
+					return
+				}
+			}
+		}
+	}()
+
+	return func() {
+		cancel()
+		wg.Wait()
+	}
+}
+
+func (s *Scheduler) lockKey(name string, policy core.TimerConcurrencyPolicy, scheduledAt time.Time) string {
+	switch policy {
+	case core.TimerConcurrencyAllowOverlap:
+		return fmt.Sprintf("%s:lock:timer:{%s}:%d", s.prefix, name, scheduledAt.UTC().Unix())
+	default:
+		return fmt.Sprintf("%s:lock:timer:{%s}", s.prefix, name)
+	}
+}
+
+type timerJob struct {
+	scheduler *Scheduler
+	name      string
+	task      core.TimerTaskRunner
+	opt       core.TimerTaskOption
+	schedule  cron.Schedule
+
+	mu       sync.Mutex
+	nextTick time.Time
+}
+
+func (j *timerJob) Run() {
+	scheduledAt := j.consumeScheduledTick(time.Now().UTC())
+	j.scheduler.runTask(j.name, j.task, j.opt, scheduledAt)
+}
+
+func (j *timerJob) consumeScheduledTick(now time.Time) time.Time {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	if j.nextTick.IsZero() {
+		j.nextTick = j.schedule.Next(now)
+	}
+	scheduledAt := j.nextTick
+	for !j.nextTick.After(now) {
+		scheduledAt = j.nextTick
+		j.nextTick = j.schedule.Next(j.nextTick)
+	}
+	if j.nextTick.Equal(scheduledAt) {
+		j.nextTick = j.schedule.Next(j.nextTick)
+	}
+	return scheduledAt
 }
 
 // Start 启动定时任务调度器

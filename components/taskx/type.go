@@ -10,9 +10,16 @@ type RunnerFuncResult = core.RunnerFuncResult
 type TimerTaskRunner = core.TimerTaskRunner
 type RunnerOption = core.RunnerOption
 type TimerTaskOption = core.TimerTaskOption
+type TimerConcurrencyPolicy = core.TimerConcurrencyPolicy
 type Envelope = core.Envelope
 type Logger = core.Logger
+
+const (
+	TimerConcurrencyForbidOverlap = core.TimerConcurrencyForbidOverlap
+	TimerConcurrencyAllowOverlap  = core.TimerConcurrencyAllowOverlap
+)
 
 var NewEnvelope = core.NewEnvelope
 var DecodeEnvelope = core.DecodeEnvelope
 var IntPtr = core.IntPtr
+var TimerConcurrencyPolicyPtr = core.TimerConcurrencyPolicyPtr

@@ -48,6 +48,7 @@ func newTestLogger(t *testing.T) logger_factory.Logger {
 // ============================================================
 type testRunner struct {
 	name    string
+	payload string
 	handler func(ctx context.Context, payload string) core.RunnerFuncResult
 
 	mu       sync.Mutex
@@ -59,12 +60,9 @@ func newTestRunner(name string, fn func(ctx context.Context, payload string) cor
 }
 
 func (r *testRunner) GetName() string { return r.name }
-func (r *testRunner) Marshal(_ core.QueueRunner) string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return ""
+func (r *testRunner) Marshal() string {
+	return r.payload
 }
-func (r *testRunner) Unmarshal(val string, _ core.QueueRunner) error { return nil }
 func (r *testRunner) Run(ctx context.Context, payload string) core.RunnerFuncResult {
 	r.mu.Lock()
 	r.received = append(r.received, payload)
@@ -92,6 +90,29 @@ func (r *testTimerRunner) GetName() string { return r.name }
 func (r *testTimerRunner) GetCron() string { return r.cronExp }
 func (r *testTimerRunner) Run(_ context.Context) core.RunnerFuncResult {
 	r.count.Add(1)
+	return core.RunnerFuncResult{IsOk: true}
+}
+
+type testConcurrentTimerRunner struct {
+	name          string
+	cronExp       string
+	sleep         time.Duration
+	inFlight      atomic.Int64
+	maxConcurrent atomic.Int64
+}
+
+func (r *testConcurrentTimerRunner) GetName() string { return r.name }
+func (r *testConcurrentTimerRunner) GetCron() string { return r.cronExp }
+func (r *testConcurrentTimerRunner) Run(_ context.Context) core.RunnerFuncResult {
+	cur := r.inFlight.Add(1)
+	for {
+		max := r.maxConcurrent.Load()
+		if cur <= max || r.maxConcurrent.CompareAndSwap(max, cur) {
+			break
+		}
+	}
+	time.Sleep(r.sleep)
+	r.inFlight.Add(-1)
 	return core.RunnerFuncResult{IsOk: true}
 }
 
@@ -174,7 +195,7 @@ func TestEventQueueFlow(t *testing.T) {
 	)
 
 	reg := taskx.NewRegistry()
-	if err := reg.RegisterEventRunner(runner, core.RunnerOption{MaxRetry: 2, ConsumerCount: 1}); err != nil {
+	if err := reg.RegisterEventRunner(runner, core.RunnerOption{MaxRetry: core.IntPtr(2), ConsumerCount: 1}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -254,7 +275,7 @@ func TestDelayQueueFlow(t *testing.T) {
 	)
 
 	reg := taskx.NewRegistry()
-	if err := reg.RegisterDelayRunner(runner, core.RunnerOption{MaxRetry: 2, ConsumerCount: 2}); err != nil {
+	if err := reg.RegisterDelayRunner(runner, core.RunnerOption{MaxRetry: core.IntPtr(2), ConsumerCount: 2}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -305,7 +326,8 @@ func TestTimerTaskDistributedLock(t *testing.T) {
 	prefix := fmt.Sprintf("test_%d", time.Now().UnixNano())
 	defer cleanKeys(ctx, rdb, prefix)
 
-	var totalCount atomic.Int64
+	var tasks []*testTimerRunner
+	var managers []*taskx.Manager
 
 	// 同一个定时任务，注册到两个 Manager（模拟两台机器）
 	for i := 0; i < 2; i++ {
@@ -329,27 +351,206 @@ func TestTimerTaskDistributedLock(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// 用闭包捕获 task
-		taskRef := task
-		t.Cleanup(
-			func() {
-				_ = mgr.Stop(ctx)
-				totalCount.Add(taskRef.count.Load())
-			},
-		)
+		tasks = append(tasks, task)
+		managers = append(managers, mgr)
 	}
 
 	// 等待 3.5 秒，预期 cron 触发约 3 次
 	time.Sleep(3500 * time.Millisecond)
 
+	for _, mgr := range managers {
+		if err := mgr.Stop(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	// 停止后统计：每次只有一个实例能抢到锁执行
 	// 总执行次数应 ≈ 3（而非 6），允许 ±1 的误差
-	total := totalCount.Load()
+	var total int64
+	for _, task := range tasks {
+		total += task.count.Load()
+	}
 	t.Logf("total timer executions across 2 managers: %d", total)
 	// 两个实例都注册了每秒任务，3.5秒内触发 ~3次，如果锁有效则总执行次数 ≤ 4
 	// 如果锁无效则两个实例各执行3次 = 6
 	if total > 5 {
 		t.Errorf("distributed lock not working: expected ~3 executions, got %d", total)
+	}
+}
+
+func TestTimerTaskOptionFallbackAndOverride(t *testing.T) {
+	rdb := newTestRedis()
+	skipIfNoRedis(t, rdb)
+	log := newTestLogger(t)
+
+	ctx := context.Background()
+	prefix := fmt.Sprintf("test_%d", time.Now().UnixNano())
+	defer cleanKeys(ctx, rdb, prefix)
+
+	globalTask := &testConcurrentTimerRunner{
+		name:    "timer-global-allow-overlap",
+		cronExp: "*/1 * * * * *",
+		sleep:   1500 * time.Millisecond,
+	}
+	overrideTask := &testConcurrentTimerRunner{
+		name:    "timer-override-forbid-overlap",
+		cronExp: "*/1 * * * * *",
+		sleep:   1500 * time.Millisecond,
+	}
+
+	reg := taskx.NewRegistry()
+	if err := reg.RegisterTimerTask(globalTask); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.RegisterTimerTask(overrideTask, core.TimerTaskOption{
+		ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencyForbidOverlap),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := taskx.NewRedisManager(
+		rdb, reg,
+		taskx.WithKeyPrefix(prefix),
+		taskx.WithLogger(log),
+		taskx.WithLockTTL(5*time.Second),
+		taskx.WithDefaultTimerTaskOption(core.TimerTaskOption{
+			ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencyAllowOverlap),
+		}),
+	)
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(3500 * time.Millisecond)
+
+	if err := mgr.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := globalTask.maxConcurrent.Load(); got < 2 {
+		t.Fatalf("expected global default allow_overlap to permit overlapping runs, max concurrent=%d", got)
+	}
+	if got := overrideTask.maxConcurrent.Load(); got > 1 {
+		t.Fatalf("expected per-task forbid_overlap to override global default, max concurrent=%d", got)
+	}
+}
+
+func TestTimerTaskForbidOverlapRenewsLock(t *testing.T) {
+	rdb := newTestRedis()
+	skipIfNoRedis(t, rdb)
+	log := newTestLogger(t)
+
+	ctx := context.Background()
+	prefix := fmt.Sprintf("test_%d", time.Now().UnixNano())
+	defer cleanKeys(ctx, rdb, prefix)
+
+	sharedTask := &testConcurrentTimerRunner{
+		name:    "timer-renew-forbid-overlap",
+		cronExp: "*/1 * * * * *",
+		sleep:   2500 * time.Millisecond,
+	}
+
+	var managers []*taskx.Manager
+	for i := 0; i < 2; i++ {
+		reg := taskx.NewRegistry()
+		if err := reg.RegisterTimerTask(sharedTask, core.TimerTaskOption{
+			ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencyForbidOverlap),
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		mgr := taskx.NewRedisManager(
+			rdb, reg,
+			taskx.WithKeyPrefix(prefix),
+			taskx.WithLogger(log),
+			taskx.WithLockTTL(time.Second),
+		)
+		if err := mgr.Start(ctx); err != nil {
+			t.Fatal(err)
+		}
+		managers = append(managers, mgr)
+	}
+
+	time.Sleep(4200 * time.Millisecond)
+
+	for _, mgr := range managers {
+		if err := mgr.Stop(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := sharedTask.maxConcurrent.Load(); got > 1 {
+		t.Fatalf("expected forbid_overlap with renew to prevent overlap across instances, max concurrent=%d", got)
+	}
+}
+
+// ============================================================
+// 测试：对外 Publish API 路径
+// ============================================================
+func TestPublishAPIs(t *testing.T) {
+	rdb := newTestRedis()
+	skipIfNoRedis(t, rdb)
+	log := newTestLogger(t)
+
+	ctx := context.Background()
+	prefix := fmt.Sprintf("test_%d", time.Now().UnixNano())
+	defer cleanKeys(ctx, rdb, prefix)
+
+	var eventReceived atomic.Int64
+	var delayReceived atomic.Int64
+
+	eventRunner := newTestRunner(
+		"publish-event", func(_ context.Context, payload string) core.RunnerFuncResult {
+			if payload == "event-payload" {
+				eventReceived.Add(1)
+			}
+			return core.RunnerFuncResult{IsOk: true}
+		},
+	)
+	delayRunner := newTestRunner(
+		"publish-delay", func(_ context.Context, payload string) core.RunnerFuncResult {
+			if payload == "delay-payload" {
+				delayReceived.Add(1)
+			}
+			return core.RunnerFuncResult{IsOk: true}
+		},
+	)
+
+	reg := taskx.NewRegistry()
+	if err := reg.RegisterEventRunner(eventRunner); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.RegisterDelayRunner(delayRunner); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := taskx.NewRedisManager(
+		rdb, reg,
+		taskx.WithKeyPrefix(prefix),
+		taskx.WithLogger(log),
+		taskx.WithPollInterval(200*time.Millisecond),
+	)
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = mgr.Stop(ctx)
+	}()
+
+	if err := mgr.PublishEvent(ctx, &testRunner{name: "publish-event", payload: "event-payload"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.PublishDelay(ctx, &testRunner{name: "publish-delay", payload: "delay-payload"}, time.Now().Add(time.Second).Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(3 * time.Second)
+
+	if got := eventReceived.Load(); got != 1 {
+		t.Fatalf("expected PublishEvent message consumed once, got %d", got)
+	}
+	if got := delayReceived.Load(); got != 1 {
+		t.Fatalf("expected PublishDelay message consumed once, got %d", got)
 	}
 }
 
@@ -377,7 +578,7 @@ func TestGracefulShutdown(t *testing.T) {
 	)
 
 	reg := taskx.NewRegistry()
-	if err := reg.RegisterEventRunner(runner, core.RunnerOption{MaxRetry: 1, ConsumerCount: 2}); err != nil {
+	if err := reg.RegisterEventRunner(runner, core.RunnerOption{MaxRetry: core.IntPtr(1), ConsumerCount: 2}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -573,7 +774,7 @@ func TestDeadLetterRecovery(t *testing.T) {
 	)
 
 	reg := taskx.NewRegistry()
-	if err := reg.RegisterEventRunner(runner, core.RunnerOption{MaxRetry: 2, ConsumerCount: 1}); err != nil {
+	if err := reg.RegisterEventRunner(runner, core.RunnerOption{MaxRetry: core.IntPtr(2), ConsumerCount: 1}); err != nil {
 		t.Fatal(err)
 	}
 

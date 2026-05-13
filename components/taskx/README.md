@@ -6,7 +6,7 @@
 
 | 能力 | 说明 | 底层结构（Redis） |
 |------|------|------------------|
-| **EventQueue** | 实时事件队列，生产即消费 | List（LPUSH / BRPOP） |
+| **EventQueue** | 实时事件队列，生产即消费 | List（LPUSH / BLMOVE） |
 | **DelayQueue** | 延迟队列，指定时间触发 | ZSet（ZADD / ZRANGEBYSCORE） |
 | **TimerTask** | 定时任务，cron 表达式驱动 | robfig/cron/v3 + 分布式锁 |
 
@@ -120,7 +120,7 @@ taskx:event:{order-notify}:dead
 
 ### 7. 分布式锁
 
-- **TimerTask**：每次 cron 触发时先抢锁，只有一台机器执行
+- **TimerTask**：每次 cron 触发时先抢锁；可按策略控制是否允许不同触发时刻重叠执行
 - **崩溃恢复**：全局只有一台机器执行恢复
 - 锁实现：`SET NX EX` + Lua 脚本安全释放（只释放自己持有的锁）
 
@@ -168,177 +168,32 @@ Producer                           Redis                              Consumer
 ### TimerTask
 
 ```
-Cron 触发 ──► 抢分布式锁 ──► 获取成功 ──► Run() ──► 释放锁
-                  │
-                  └──► 获取失败 ──► 跳过（其他机器在执行）
+Cron 触发 ──► 按并发策略生成锁 Key ──► 抢分布式锁 ──► 获取成功 ──► Run() ──► 释放锁
+                                │
+                                └──► 获取失败 ──► 跳过（其他机器/其他轮次已占用）
 ```
+
+支持两种并发策略：
+
+- `forbid_overlap`：同一 task 上一轮未结束时，下一轮直接跳过
+- `allow_overlap`：仅对同一次 cron tick 做分布式去重，不阻止不同触发时刻重叠执行
+
+单个 task 可以通过 `RegisterTimerTask(..., TimerTaskOption{...})` 单独指定；未指定时继承 `WithDefaultTimerTaskOption(...)` 的全局默认值。
+
+多机部署注意事项：
+
+- `forbid_overlap`：框架会在任务执行期间自动续租锁，降低长任务因 `LockTTL` 到期而被其他实例重入的风险。
+- `allow_overlap`：锁 key 基于“计划触发时间（cron tick）”生成，而不是简单使用 `time.Now()`，可降低同一轮任务因调度抖动产生重复执行的概率。
+- 以上策略都仍依赖各实例机器时钟大体一致；若发生明显时钟漂移、Redis 不可用、长时间 STW/网络抖动等极端情况，仍可能出现重复执行，业务侧应保持幂等。
 
 ## 使用示例
 
-### 1. 定义 Runner
+示例已拆分到 `components/taskx/example/` 目录：
 
-```go
-package main
-
-import (
-    "context"
-    "encoding/json"
-    "fmt"
-
-    "gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
-)
-
-// OrderNotifyRunner 订单通知 Runner（EventQueue 用）
-type OrderNotifyRunner struct {
-    OrderID string `json:"order_id"`
-    UserID  string `json:"user_id"`
-}
-
-func (r *OrderNotifyRunner) GetName() string { return "order-notify" }
-
-func (r *OrderNotifyRunner) Marshal(runner core.QueueRunner) string {
-    b, _ := json.Marshal(runner)
-    return string(b)
-}
-
-func (r *OrderNotifyRunner) Unmarshal(val string, obj core.QueueRunner) error {
-    return json.Unmarshal([]byte(val), obj)
-}
-
-func (r *OrderNotifyRunner) Run(ctx context.Context, payload string) core.RunnerFuncResult {
-    var data OrderNotifyRunner
-    if err := json.Unmarshal([]byte(payload), &data); err != nil {
-        return core.RunnerFuncResult{IsOk: false, Err: err}
-    }
-    fmt.Printf("sending notification: order=%s, user=%s\n", data.OrderID, data.UserID)
-    // ... 发送通知逻辑 ...
-    return core.RunnerFuncResult{IsOk: true}
-}
-
-// ReportTimerTask 定时报表任务（TimerTask 用）
-type ReportTimerTask struct{}
-
-func (t *ReportTimerTask) GetName() string { return "daily-report" }
-func (t *ReportTimerTask) GetCron() string { return "0 0 2 * * *" } // 每天凌晨 2 点
-
-func (t *ReportTimerTask) Run(ctx context.Context) core.RunnerFuncResult {
-    fmt.Println("generating daily report...")
-    return core.RunnerFuncResult{IsOk: true}
-}
-```
-
-### 2. 注册并启动
-
-```go
-package main
-
-import (
-    "context"
-    "os"
-    "os/signal"
-    "syscall"
-    "time"
-
-    "github.com/redis/go-redis/v9"
-
-    "gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
-    "gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx"
-    "gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
-)
-
-func main() {
-    // 初始化 Logger
-    log, _ := logger_factory.NewLogger(logger_factory.Config{
-        DriverType:  logger_factory.DriverZap,
-        Level:       logger_factory.LevelInfo,
-        Development: true,
-    })
-
-    // 初始化 Redis
-    rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
-
-    // 创建注册中心
-    registry := taskx.NewRegistry()
-
-    // 注册 EventQueue Runner（3 个消费者，最大重试 5 次）
-    _ = registry.RegisterEventRunner(
-        &OrderNotifyRunner{},
-        core.RunnerOption{MaxRetry: core.IntPtr(5), ConsumerCount: 3},
-    )
-
-    // 注册 DelayQueue Runner
-    _ = registry.RegisterDelayRunner(
-        &OrderNotifyRunner{},
-        core.RunnerOption{MaxRetry: core.IntPtr(3), ConsumerCount: 2},
-    )
-
-    // 注册 TimerTask
-    _ = registry.RegisterTimerTask(&ReportTimerTask{})
-
-    // 创建 Manager
-    mgr := taskx.NewRedisManager(rdb, registry,
-        taskx.WithKeyPrefix("myapp"),
-        taskx.WithLogger(log),
-        taskx.WithPollInterval(time.Second),
-        taskx.WithLockTTL(30*time.Second),
-        taskx.WithProcessingTimeout(5*time.Minute),
-    )
-
-    // 启动
-    ctx := context.Background()
-    if err := mgr.Start(ctx); err != nil {
-        panic(err)
-    }
-
-    // 发布事件
-    _ = mgr.PublishEvent(ctx, &OrderNotifyRunner{
-        OrderID: "ORD-001",
-        UserID:  "USR-123",
-    })
-
-    // 发布延迟任务（10 分钟后执行）
-    _ = mgr.PublishDelay(ctx, &OrderNotifyRunner{
-        OrderID: "ORD-002",
-        UserID:  "USR-456",
-    }, time.Now().Add(10*time.Minute).Unix())
-
-    // 优雅退出
-    quit := make(chan os.Signal, 1)
-    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-    <-quit
-
-    _ = mgr.Stop(ctx)
-}
-```
-
-### 3. 死信恢复
-
-```go
-// 恢复事件队列死信（最多 100 条），RetryCount 会被重置为 0
-recovered, err := mgr.RecoverEventDead(ctx, "order-notify", 100)
-
-// 恢复延迟队列死信
-recovered, err := mgr.RecoverDelayDead(ctx, "order-notify", 100)
-```
-
-### 4. 自定义驱动
-
-实现 `driver/` 下的接口即可替换 Redis：
-
-```go
-import "gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
-
-type MyEventQueueDriver struct{ /* ... */ }
-// 实现 driver.EventQueueDriver 接口的所有方法
-
-mgr := taskx.NewManager(registry,
-    taskx.WithEventQueueDriver(&MyEventQueueDriver{}),
-    taskx.WithDelayQueueDriver(&MyDelayQueueDriver{}),
-    taskx.WithLockDriver(&MyLockDriver{}),
-    taskx.WithLogger(log),
-)
-// 需要自行设置 ConsumerFactory，或使用自定义 Manager 封装
-```
+- `example/01_runner.go`：定义 Runner / TimerTask
+- `example/02_bootstrap.go`：注册、启动、发布、优雅退出
+- `example/03_recovery.go`：死信恢复
+- `example/04_custom_driver.go`：自定义驱动接入
 
 ## 配置参数
 
@@ -350,6 +205,16 @@ mgr := taskx.NewManager(registry,
 | `WithLockTTL(d)` | `30s` | 分布式锁默认 TTL |
 | `WithProcessingTimeout(d)` | `5m` | processing 队列超时时间，用于崩溃恢复等待 |
 | `WithRecoverBatchSize(n)` | `1000` | 崩溃恢复每批次移动的消息数量 |
+| `WithDefaultTimerTaskOption(opt)` | `MaxRetry=0, ConcurrencyPolicy=forbid_overlap` | TimerTask 全局默认选项，单任务未显式指定时继承 |
+
+### TimerTaskOption
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `MaxRetry` | 继承全局，最终默认 `0` | 执行失败重试次数 |
+| `ConcurrencyPolicy` | 继承全局，最终默认 `forbid_overlap` | `forbid_overlap` / `allow_overlap` |
+
+> 建议：关键任务默认使用 `forbid_overlap`；若业务确实允许跨轮次重叠执行，再显式配置为 `allow_overlap`，同时保证任务幂等。
 
 ## Redis Key 命名规范
 
@@ -360,7 +225,8 @@ mgr := taskx.NewManager(registry,
 {prefix}:delay:{runner_name}:pending        # DelayQueue 待触发
 {prefix}:delay:{runner_name}:processing     # DelayQueue 执行中
 {prefix}:delay:{runner_name}:dead           # DelayQueue 死信
-{prefix}:lock:timer:{runner_name}           # TimerTask 执行锁
+{prefix}:lock:timer:{runner_name}           # TimerTask forbid_overlap 锁
+{prefix}:lock:timer:{runner_name}:{slot}    # TimerTask allow_overlap 锁（slot 为 cron tick 时间窗）
 {prefix}:lock:recover:event:{runner_name}   # EventQueue 恢复锁
 {prefix}:lock:recover:delay:{runner_name}   # DelayQueue 恢复锁
 ```
