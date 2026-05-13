@@ -61,7 +61,7 @@ const (
 )
 
 // IntPtr 返回 int 值的指针，用于设置 MaxRetry 等可选字段
-func IntPtr(v int) *int { return &v }
+func IntPtr(v int) *int { return new(v) }
 
 // TimerConcurrencyPolicyPtr 返回并发策略指针，用于设置可选字段
 func TimerConcurrencyPolicyPtr(v TimerConcurrencyPolicy) *TimerConcurrencyPolicy { return &v }
@@ -88,7 +88,7 @@ type AlertData struct {
 
 // AlertFunc 异常告警回调。当框架遇到无法自动处理的异常（如消息格式损坏、重试全部失败等）时调用，
 // 使调用方可以感知并接入自己的告警通道（钉钉、飞书、监控系统等）。
-// 参数 alertType 为告警类型，msg 为详细描述。
+// 参数 data 包含告警来源、告警类型、Runner 名称、相关 Envelope 和执行结果等上下文信息。
 type AlertFunc func(AlertData)
 
 // ListenerKind 监听器类型

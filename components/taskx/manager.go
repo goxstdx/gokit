@@ -174,6 +174,12 @@ func (m *Manager) Start(ctx context.Context) error {
 	eventEntries := m.registry.GetEventRunners()
 	delayEntries := m.registry.GetDelayRunners()
 	timerEntries := m.registry.GetTimerTasks()
+	if len(eventEntries)+len(delayEntries) > 0 && m.cfg.LockDriver == nil {
+		return fmt.Errorf(
+			"taskx: lock driver not configured for %d registered queue runner(s) (event=%d, delay=%d)",
+			len(eventEntries)+len(delayEntries), len(eventEntries), len(delayEntries),
+		)
+	}
 	if len(eventEntries) > 0 {
 		if m.cfg.EventDriver == nil {
 			return fmt.Errorf("taskx: event queue driver not configured for %d registered event runner(s)", len(eventEntries))
@@ -271,7 +277,9 @@ func (m *Manager) Stop(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	if !m.running {
-		m.cfg.Logger.Infof("taskx: manager stop skipped, already stopped")
+		if m.cfg.Logger != nil {
+			m.cfg.Logger.Infof("taskx: manager stop skipped, already stopped")
+		}
 		return nil
 	}
 	m.cfg.Logger.Infof("taskx: manager stopping")
@@ -307,7 +315,7 @@ func (m *Manager) Stop(ctx context.Context) error {
 	}
 	m.cfg.Logger.Infof("taskx: all consumers stopped")
 
-	// 4) 停告警分发协程并 drain 剩余告警，避免停止时静默丢失上下文信息。
+	// 4) 停告警分发协程并 drain 剩余告警（写日志后丢弃，不再分发给外部告警回调）。
 	if err := m.stopAlertDispatcherWithContextLocked(ctx); err != nil {
 		m.cfg.Logger.Errorf("taskx: manager stop failed while stopping alert dispatcher: %v", err)
 		return err

@@ -88,6 +88,8 @@ taskx:event:{runner_name}:dead         # 死信
 抢分布式锁 → 等待 processingTimeout → 将 processing 残留消息移回 pending → 释放锁 → 退出
 ```
 
+> 前提：只要注册了 EventQueue / DelayQueue runner，`Start()` 就要求必须配置 `LockDriver`；未配置会直接返回错误，不会进入“无锁启动”。
+
 - **等待 processingTimeout**：给活跃的消费者足够时间处理完，降低误恢复正在执行消息的概率
 - **分布式锁**：多机启动时只有一台执行恢复；恢复期间会自动续租，降低长恢复导致锁过期的并发恢复风险
 - 等待结束后，processing 中还残留的消息会被视为可恢复消息并移回 pending；如果业务处理时间超过 `processingTimeout`，可能发生重复投递，业务侧需保持幂等或调大该配置
@@ -103,7 +105,8 @@ taskx:event:{runner_name}:dead         # 死信
 2. **DelayQueue**：关闭内部 channel 后，在 **1 秒超时** 内将 channel 中残留的已转入 processing 但未执行的消息 Nack 回 pending
 3. 超时后仍未处理完的消息保留在 processing 中，等待下次启动时的崩溃恢复机制兜底
 4. **TimerTask**：等待正在执行的定时任务完成后才返回
-5. 若 `ctx` 到期，`Stop(ctx)` 返回 `ctx.Err()`，调用方可据此决定是否继续等待
+5. 内部告警队列在停止阶段会 drain 并写日志，剩余告警不会再回调到 `WithAlertFunc`（即记录后丢弃）
+6. 若 `ctx` 到期，`Stop(ctx)` 返回 `ctx.Err()`，调用方可据此决定是否继续等待
 
 > **关于 DelayQueue 停止时的消息安全**：`fetch` 中 Lua 脚本会原子地将到期消息从 pending 转移到 processing，然后逐条投入 channel。如果 Stop 在 Lua 执行完成后、消息投入 channel 前触发，这部分消息会留在 processing 中而非 channel 中，因此 drain 阶段无法 Nack 回去。这些消息不会丢失，会在下次启动时由崩溃恢复机制兜底。当前设计优先保证停止速度，避免长时间阻塞导致 K8s 等容器编排系统强制杀死 pod。
 >
@@ -211,6 +214,7 @@ Cron 触发 ──► 按并发策略生成锁 Key ──► 抢分布式锁 ─
 - `example/03_recovery.go`：死信恢复
 - `example/04_custom_driver.go`：自定义驱动接入
 - `example/05_alert_notify.go`：接收 NextTime 告警并由业务转投 DelayQueue
+- `example/06_all_options.go`：全量 `With...` 配置示例（每项含注释）
 
 ### 直接投递 payload（新消息）
 
