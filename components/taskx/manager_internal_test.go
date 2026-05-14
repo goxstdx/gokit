@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/queue"
 )
 
 func newInternalTestLogger(t *testing.T) core.Logger {
@@ -193,6 +193,7 @@ func (c *internalConsumer) Stop() {
 		c.stopped.Add(1)
 	}
 }
+func (c *internalConsumer) BuildKey() string { return "" }
 
 func TestNewManagerWithNilRegistryCreatesEmptyRegistry(t *testing.T) {
 	mgr := NewManager(nil, WithLogger(newInternalTestLogger(t)))
@@ -238,7 +239,7 @@ func TestSetRegistryFailsWhileRunning(t *testing.T) {
 		WithEventQueueDriver(internalEventDriver{}),
 	)
 	mgr.SetEventConsumerFactory(
-		func(core.QueueRunner, core.RunnerOption, driver.EventQueueDriver, driver.LockDriver, *ManagerConfig) consumer {
+		func(queue.EventConsumerConfig) consumer {
 			return &internalConsumer{}
 		},
 	)
@@ -387,7 +388,7 @@ func TestStartFailureCleansAlertDispatcherAndStartedConsumers(t *testing.T) {
 	)
 	var created atomic.Int64
 	mgr.SetEventConsumerFactory(
-		func(core.QueueRunner, core.RunnerOption, driver.EventQueueDriver, driver.LockDriver, *ManagerConfig) consumer {
+		func(queue.EventConsumerConfig) consumer {
 			if created.Add(1) == 2 {
 				return &internalConsumer{startErr: errors.New("boom"), stopped: &stopped}
 			}
@@ -420,7 +421,7 @@ func TestStartFailureCleansAlertDispatcherAndStartedConsumers(t *testing.T) {
 func TestPublishDelayAllowsImmediateExecuteAt(t *testing.T) {
 	drv := &internalDelayDriver{}
 	mgr := NewManager(nil, WithLogger(newInternalTestLogger(t)), WithDelayQueueDriver(drv))
-	now := time.Now().Unix()
+	now := time.Now()
 	env, err := mgr.PublishDelayPayload(context.Background(), "delay-now", "payload", now)
 	if err != nil {
 		t.Fatalf("expected current unix second to be accepted: %v", err)
@@ -428,11 +429,11 @@ func TestPublishDelayAllowsImmediateExecuteAt(t *testing.T) {
 	if env == nil || env.Source != core.EnvelopeSourceDelay {
 		t.Fatalf("unexpected envelope: %+v", env)
 	}
-	if drv.lastExecuteAt != now || drv.lastQueue != "taskx:delay:{delay-now}:pending" || drv.lastData == "" {
+	if drv.lastExecuteAt != now.UnixMicro() || drv.lastQueue != "taskx:delay:{delay-now}:pending" || drv.lastData == "" {
 		t.Fatalf("unexpected driver call: queue=%q executeAt=%d data=%q", drv.lastQueue, drv.lastExecuteAt, drv.lastData)
 	}
-	if _, err := mgr.PublishDelayPayload(context.Background(), "delay-now", "payload", 0); err == nil {
-		t.Fatal("expected non-positive executeAt to be rejected")
+	if _, err := mgr.PublishDelayPayload(context.Background(), "delay-now", "payload", time.Time{}); err == nil {
+		t.Fatal("expected zero executeAt to be rejected")
 	}
 }
 
@@ -481,7 +482,7 @@ func TestDelayRetryBaseIntervalConfigControlsFallbackSchedule(t *testing.T) {
 		WithDelayRetryBaseInterval(2*time.Second),
 	)
 	mgr.SetDelayConsumerFactory(newDelayConsumerFactory)
-	before := time.Now().Unix()
+	before := time.Now().UnixMicro()
 	if err := mgr.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -489,12 +490,12 @@ func TestDelayRetryBaseIntervalConfigControlsFallbackSchedule(t *testing.T) {
 
 	select {
 	case got := <-drv.retryAtCh:
-		if got < before+2 || got > time.Now().Unix()+3 {
+		if got < before+2_000_000 || got > time.Now().UnixMicro()+3_000_000 {
 			t.Fatalf(
 				"retry executeAt not based on configured interval: got=%d before=%d now=%d",
 				got,
 				before,
-				time.Now().Unix(),
+				time.Now().UnixMicro(),
 			)
 		}
 	case <-time.After(time.Second):

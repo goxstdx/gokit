@@ -299,7 +299,7 @@ func TestDelayQueueFlow(t *testing.T) {
 	// 发布 3 条延迟消息，延迟 1 秒
 	dp := redisx.NewDelayQueueProvider(rdb)
 	pendingKey := prefix + ":delay:{dly-flow}:pending"
-	executeAt := time.Now().Add(time.Second).Unix()
+	executeAt := time.Now().Add(time.Second).UnixMicro()
 	for i := 0; i < 3; i++ {
 		env := core.NewEnvelope(fmt.Sprintf("delay-msg-%d", i), core.EnvelopeSourceDelay)
 		if err := dp.Add(ctx, pendingKey, env.Encode(), executeAt); err != nil {
@@ -556,7 +556,7 @@ func TestPublishAPIs(t *testing.T) {
 	if _, err := mgr.PublishDelay(
 		ctx,
 		&testRunner{name: "publish-delay", payload: "delay-payload"},
-		time.Now().Add(time.Second).Unix(),
+		time.Now().Add(time.Second),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -958,7 +958,7 @@ func TestManagerHealthSnapshot(t *testing.T) {
 	if _, err := mgr.PublishDelay(
 		ctx,
 		&testRunner{name: "health-delay", payload: "future-job"},
-		time.Now().Add(30*time.Second).Unix(),
+		time.Now().Add(30*time.Second),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -1012,7 +1012,7 @@ func TestEventPayloadDirectRepublishToDelay(t *testing.T) {
 
 	eventRunner := newTestRunner(
 		"evt-direct", func(ctx context.Context, payload string) core.RunnerFuncResult {
-			nextTime := time.Now().Add(1 * time.Second).Unix()
+			nextTime := time.Now().Add(1 * time.Second)
 			if _, err := mgr.PublishDelayPayload(ctx, "delay-direct", payload, nextTime); err != nil {
 				return core.RunnerFuncResult{IsOk: false, Err: err}
 			}
@@ -1083,7 +1083,7 @@ func TestEventNextTimeAlertAndNoRetry(t *testing.T) {
 			return core.RunnerFuncResult{
 				IsOk:     false,
 				Err:      fmt.Errorf("need reschedule"),
-				NextTime: time.Now().Add(5 * time.Second).Unix(),
+				NextTime: core.TimePtr(time.Now().Add(5 * time.Second)),
 			}
 		},
 	)
@@ -1141,7 +1141,7 @@ func TestEventNextTimeAlertAndNoRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	processingLen, err := rdb.LLen(ctx, processingKey).Result()
+	processingLen, err := rdb.ZCard(ctx, processingKey).Result()
 	if err != nil {
 		t.Fatal(err)
 	}

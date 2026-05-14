@@ -27,14 +27,18 @@ const (
 	TimerConcurrencySinglePerTick = core.TimerConcurrencySinglePerTick
 )
 
+const DefaultEventQueueGroup = core.DefaultEventQueueGroup
+
 const (
 	AlertCorruptMessage         = core.AlertCorruptMessage
 	AlertMaxRetryExhausted      = core.AlertMaxRetryExhausted
 	AlertEventNextTimeIgnored   = core.AlertEventNextTimeIgnored
 	AlertTimerAllAttemptsFailed = core.AlertTimerAllAttemptsFailed
+	AlertUnknownRunner          = core.AlertUnknownRunner
 )
 
 var NewEnvelope = core.NewEnvelope
 var DecodeEnvelope = core.DecodeEnvelope
 var IntPtr = core.IntPtr
+var TimePtr = core.TimePtr
 var TimerConcurrencyPolicyPtr = core.TimerConcurrencyPolicyPtr

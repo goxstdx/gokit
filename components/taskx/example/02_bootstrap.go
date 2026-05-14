@@ -71,7 +71,7 @@ func BootstrapExample() {
 	_, _ = mgr.PublishDelay(
 		ctx,
 		&OrderNotifyRunner{OrderID: "ORD-002", UserID: "USR-456"},
-		time.Now().Add(10*time.Minute).Unix(),
+		time.Now().Add(10*time.Minute),
 	)
 
 	quit := make(chan os.Signal, 1)

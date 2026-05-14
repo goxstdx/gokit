@@ -40,49 +40,15 @@ func NewRedisManager(rdb redis.Cmdable, registry *Registry, opts ...Option) *Man
 	return mgr
 }
 
-func newEventConsumerFactory(
-	runner core.QueueRunner, opt core.RunnerOption,
-	eq driver.EventQueueDriver, lk driver.LockDriver,
-	cfg *ManagerConfig,
-) consumer {
-	return queue.NewEventConsumer(
-		runner,
-		opt,
-		eq,
-		lk,
-		cfg.KeyPrefix,
-		cfg.LockTTL,
-		cfg.ProcessingTimeout,
-		cfg.InternalOpTimeout,
-		cfg.EventPopTimeout,
-		cfg.Logger,
-		cfg.OnAlert,
-		cfg.OnHeartbeat,
-		cfg.TraceContextKey,
-	)
+func newEventConsumerFactory(cfg queue.EventConsumerConfig) consumer {
+	return queue.NewEventConsumer(cfg)
 }
 
 func newDelayConsumerFactory(
 	runner core.QueueRunner, opt core.RunnerOption,
-	dq driver.DelayQueueDriver, lk driver.LockDriver,
-	cfg *ManagerConfig,
+	cfg queue.DelayConsumerConfig,
 ) consumer {
-	return queue.NewDelayConsumer(
-		runner,
-		opt,
-		dq,
-		lk,
-		cfg.KeyPrefix,
-		cfg.LockTTL,
-		cfg.PollInterval,
-		cfg.ProcessingTimeout,
-		cfg.InternalOpTimeout,
-		cfg.DelayRetryBaseInterval,
-		cfg.Logger,
-		cfg.OnAlert,
-		cfg.OnHeartbeat,
-		cfg.TraceContextKey,
-	)
+	return queue.NewDelayConsumer(runner, opt, cfg)
 }
 
 func newTimerSchedulerFactory(lk driver.LockDriver, prefix string, cfg *ManagerConfig) timerScheduler {
@@ -108,9 +74,9 @@ func (m *Manager) RecoverEventDead(ctx context.Context, runnerName string, count
 	if cfg.EventDriver == nil {
 		return 0, nil
 	}
-	deadKey := cfg.KeyPrefix + ":event:{" + runnerName + "}:dead"
-	pendingKey := cfg.KeyPrefix + ":event:{" + runnerName + "}:pending"
-	return recoverEventDeadWithReset(ctx, cfg.EventDriver, deadKey, pendingKey, count, cfg.Logger, cfg.OnAlert)
+	groupName := m.resolveEventGroupName(runnerName)
+	keys := queue.NewQueueKeySet(cfg.KeyPrefix, "event", groupName)
+	return recoverEventDeadWithReset(ctx, cfg.EventDriver, keys.Dead, keys.Pending, count, cfg.Logger, cfg.OnAlert)
 }
 
 // RecoverDelayDead 从延迟队列死信中恢复消息，重置重试计数。
@@ -123,9 +89,8 @@ func (m *Manager) RecoverDelayDead(ctx context.Context, runnerName string, count
 	if cfg.DelayDriver == nil {
 		return 0, nil
 	}
-	deadKey := cfg.KeyPrefix + ":delay:{" + runnerName + "}:dead"
-	pendingKey := cfg.KeyPrefix + ":delay:{" + runnerName + "}:pending"
-	return recoverDelayDeadWithReset(ctx, cfg.DelayDriver, deadKey, pendingKey, count, cfg.Logger, cfg.OnAlert)
+	keys := queue.NewQueueKeySet(cfg.KeyPrefix, "delay", runnerName)
+	return recoverDelayDeadWithReset(ctx, cfg.DelayDriver, keys.Dead, keys.Pending, count, cfg.Logger, cfg.OnAlert)
 }
 
 // recoverEventDeadWithReset 逐条弹出死信、重置 RetryCount、推入 pending
@@ -210,7 +175,7 @@ func recoverDelayDeadWithReset(
 		}
 		env.RetryCount = 0
 		env.Source = core.EnvelopeSourceDelay
-		if err := drv.Add(ctx, pendingKey, env.Encode(), time.Now().Unix()); err != nil {
+		if err := drv.Add(ctx, pendingKey, env.Encode(), time.Now().UnixMicro()); err != nil {
 			return recovered, err
 		}
 		recovered++

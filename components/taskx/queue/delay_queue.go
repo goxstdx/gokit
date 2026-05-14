@@ -20,15 +20,16 @@ type DelayConsumer struct {
 	lock   driver.LockDriver
 	logger core.Logger
 
-	prefix            string
-	onAlert           core.AlertFunc
-	onHeartbeat       core.ListenerHeartbeatFunc
-	traceKey          string
-	lockTTL           time.Duration
-	pollInterval      time.Duration
-	procTimeout       time.Duration
-	internalOpTimeout time.Duration
-	retryBaseInterval time.Duration
+	keys                QueueKeySet
+	onAlert             core.AlertFunc
+	onHeartbeat         core.ListenerHeartbeatFunc
+	traceKey            string
+	lockTTL             time.Duration
+	pollInterval        time.Duration
+	procTimeout         time.Duration
+	recoveryGracePeriod time.Duration
+	internalOpTimeout   time.Duration
+	retryBaseInterval   time.Duration
 
 	taskCh chan string
 	wg     sync.WaitGroup
@@ -36,58 +37,28 @@ type DelayConsumer struct {
 }
 
 // NewDelayConsumer 创建延迟队列消费器
-func NewDelayConsumer(
-	runner core.QueueRunner,
-	opt core.RunnerOption,
-	dq driver.DelayQueueDriver,
-	lk driver.LockDriver,
-	prefix string,
-	lockTTL time.Duration,
-	pollInterval time.Duration,
-	procTimeout time.Duration,
-	internalOpTimeout time.Duration,
-	retryBaseInterval time.Duration,
-	logger core.Logger,
-	onAlert core.AlertFunc,
-	onHeartbeat core.ListenerHeartbeatFunc,
-	traceKey string,
-) *DelayConsumer {
+func NewDelayConsumer(runner core.QueueRunner, opt core.RunnerOption, cfg DelayConsumerConfig) *DelayConsumer {
 	return &DelayConsumer{
-		runner:            runner,
-		option:            opt,
-		driver:            dq,
-		lock:              lk,
-		prefix:            prefix,
-		lockTTL:           lockTTL,
-		pollInterval:      pollInterval,
-		procTimeout:       procTimeout,
-		internalOpTimeout: internalOpTimeout,
-		retryBaseInterval: retryBaseInterval,
-		logger:            logger,
-		onAlert:           onAlert,
-		onHeartbeat:       onHeartbeat,
-		traceKey:          traceKey,
+		runner:              runner,
+		option:              opt,
+		driver:              cfg.Driver,
+		lock:                cfg.Lock,
+		keys:                cfg.Keys,
+		lockTTL:             cfg.LockTTL,
+		pollInterval:        cfg.PollInterval,
+		procTimeout:         cfg.ProcTimeout,
+		recoveryGracePeriod: cfg.RecoveryGracePeriod,
+		internalOpTimeout:   cfg.InternalOpTimeout,
+		retryBaseInterval:   cfg.RetryBaseInterval,
+		logger:              cfg.Logger,
+		onAlert:             cfg.OnAlert,
+		onHeartbeat:         cfg.OnHeartbeat,
+		traceKey:            cfg.TraceKey,
 	}
 }
 
 func (c *DelayConsumer) BuildKey() string {
-	return fmt.Sprintf("%s:delay:{%s}", c.prefix, c.runner.GetName())
-}
-
-func (c *DelayConsumer) pendingKey() string {
-	return fmt.Sprintf("%s:pending", c.BuildKey())
-}
-
-func (c *DelayConsumer) processingKey() string {
-	return fmt.Sprintf("%s:processing", c.BuildKey())
-}
-
-func (c *DelayConsumer) deadKey() string {
-	return fmt.Sprintf("%s:dead", c.BuildKey())
-}
-
-func (c *DelayConsumer) recoveryLockKey() string {
-	return fmt.Sprintf("%s:lock:recover:delay:{%s}", c.prefix, c.runner.GetName())
+	return c.keys.Pending
 }
 
 func (c *DelayConsumer) alert(data core.AlertData) {
@@ -127,8 +98,16 @@ func (c *DelayConsumer) internalOpContextWithTimeout(timeout time.Duration) (con
 	return context.WithTimeout(context.Background(), timeout)
 }
 
+func (c *DelayConsumer) gracePeriod() time.Duration {
+	if c.recoveryGracePeriod > 0 {
+		return c.recoveryGracePeriod
+	}
+	return defaults.RecoveryGracePeriod
+}
+
 func (c *DelayConsumer) recoverMaxDuration(lockTTL time.Duration) time.Duration {
-	maxDuration := c.procTimeout + lockTTL
+	gp := c.gracePeriod()
+	maxDuration := gp + lockTTL
 	minDuration := lockTTL + defaults.RecoveryLockMargin
 	if maxDuration < minDuration {
 		maxDuration = minDuration
@@ -156,6 +135,10 @@ func (c *DelayConsumer) Start(ctx context.Context) error {
 	// 一次性恢复协程
 	c.wg.Add(1)
 	go c.startupRecover(ctx)
+
+	// 定期恢复协程（兜底）
+	c.wg.Add(1)
+	go c.periodicRecover(ctx)
 
 	c.logger.Infof("taskx: delay[%s] started with %d workers", c.runner.GetName(), c.option.ConsumerCount)
 	return nil
@@ -185,7 +168,7 @@ func (c *DelayConsumer) Stop() {
 				)
 				break
 			}
-			if err := c.driver.Nack(drainCtx, c.processingKey(), c.pendingKey(), raw, time.Now().Unix()); err != nil {
+			if err := c.driver.Nack(drainCtx, c.keys.Processing, c.keys.Pending, raw, time.Now().UnixMicro()); err != nil {
 				c.logger.Warnf("taskx: delay[%s] drain nack error: %v", c.runner.GetName(), err)
 			} else {
 				drained++
@@ -199,22 +182,49 @@ func (c *DelayConsumer) Stop() {
 	c.logger.Infof("taskx: delay[%s] stopped", c.runner.GetName())
 }
 
-// startupRecover 启动时一次性恢复：抢锁 → 直接恢复超时残留消息 → 退出
+// startupRecover 启动时一次性恢复
 func (c *DelayConsumer) startupRecover(ctx context.Context) {
+	defer c.wg.Done()
+	c.doRecover(ctx, "startup")
+}
+
+// periodicRecover 后台定期恢复协程，兜底处理因快速重启或多实例 crash 遗漏的 processing 消息。
+func (c *DelayConsumer) periodicRecover(ctx context.Context) {
 	defer c.wg.Done()
 
 	if c.lock == nil {
 		return
 	}
 
-	lockKey := c.recoveryLockKey()
-	lockTTL := c.procTimeout + defaults.RecoveryLockMargin
+	ticker := time.NewTicker(c.gracePeriod())
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.doRecover(ctx, "periodic")
+		}
+	}
+}
+
+// doRecover 通用恢复逻辑：抢锁 → 按 gracePeriod 过滤恢复 processing 超时消息 → 释放锁。
+// 若业务处理耗时超过 gracePeriod，仍可能发生重复投递，业务侧需保持幂等。
+func (c *DelayConsumer) doRecover(ctx context.Context, label string) {
+	if c.lock == nil {
+		return
+	}
+
+	gp := c.gracePeriod()
+	lockKey := c.keys.RecoveryLock
+	lockTTL := gp + defaults.RecoveryLockMargin
 	if c.lockTTL > lockTTL {
 		lockTTL = c.lockTTL
 	}
 	ok, err := c.lock.Lock(ctx, lockKey, lockTTL)
 	if err != nil {
-		c.logger.Warnf("taskx: delay[%s] recovery lock error: %v", c.runner.GetName(), err)
+		c.logger.Warnf("taskx: delay[%s] %s recovery lock error: %v", c.runner.GetName(), label, err)
 		return
 	}
 	if !ok {
@@ -228,9 +238,8 @@ func (c *DelayConsumer) startupRecover(ctx context.Context) {
 	stopRenew, lockLost := c.startRecoverRenewLoop(lockKey, lockTTL)
 	defer stopRenew()
 
-	// DelayQueue 的 processing 使用 ZSet score 记录进入 processing 的时间；这里只恢复超过
-	// processingTimeout 的消息。若业务处理耗时超过该值，仍可能发生重复投递，业务侧需保持幂等。
-	// 后续优化可考虑：处理期间刷新租约/score，或按任务维度配置更合适的 processingTimeout。
+	c.logger.Infof("taskx: delay[%s] %s recovery started (gracePeriod=%v)", c.runner.GetName(), label, gp)
+
 	var totalRecovered int64
 	startedAt := time.Now()
 	maxDuration := c.recoverMaxDuration(lockTTL)
@@ -243,7 +252,7 @@ func (c *DelayConsumer) startupRecover(ctx context.Context) {
 		default:
 		}
 		if time.Since(startedAt) > maxDuration {
-			err := fmt.Errorf("taskx: delay[%s] recovery exceeded max duration %v", c.runner.GetName(), maxDuration)
+			err := fmt.Errorf("taskx: delay[%s] %s recovery exceeded max duration %v", c.runner.GetName(), label, maxDuration)
 			c.logger.Warnf("%v", err)
 			c.alert(
 				core.AlertData{
@@ -255,9 +264,9 @@ func (c *DelayConsumer) startupRecover(ctx context.Context) {
 			)
 			return
 		}
-		recovered, err := c.driver.RecoverProcessing(ctx, c.processingKey(), c.pendingKey(), c.procTimeout)
+		recovered, err := c.driver.RecoverProcessing(ctx, c.keys.Processing, c.keys.Pending, gp)
 		if err != nil {
-			c.logger.Warnf("taskx: delay[%s] recover processing error: %v", c.runner.GetName(), err)
+			c.logger.Warnf("taskx: delay[%s] %s recover processing error: %v", c.runner.GetName(), label, err)
 			break
 		}
 		totalRecovered += recovered
@@ -266,7 +275,7 @@ func (c *DelayConsumer) startupRecover(ctx context.Context) {
 		}
 	}
 	if totalRecovered > 0 {
-		c.logger.Infof("taskx: delay[%s] recovered %d orphaned messages from processing", c.runner.GetName(), totalRecovered)
+		c.logger.Infof("taskx: delay[%s] %s recovered %d orphaned messages from processing", c.runner.GetName(), label, totalRecovered)
 	}
 }
 
@@ -371,7 +380,7 @@ func (c *DelayConsumer) fetch(ctx context.Context) {
 		return
 	}
 
-	now := time.Now().Unix()
+	now := time.Now().UnixMicro()
 	batchSize := int64(c.option.ConsumerCount * 2)
 	if batchSize < 10 {
 		batchSize = 10
@@ -382,10 +391,10 @@ func (c *DelayConsumer) fetch(ctx context.Context) {
 		c.runner.GetName(),
 		now,
 		batchSize,
-		c.pendingKey(),
-		c.processingKey(),
+		c.keys.Pending,
+		c.keys.Processing,
 	)
-	items, err := c.driver.TransferToProcessing(ctx, c.pendingKey(), c.processingKey(), now, batchSize)
+	items, err := c.driver.TransferToProcessing(ctx, c.keys.Pending, c.keys.Processing, now, batchSize)
 	if err != nil {
 		if ctx.Err() != nil {
 			return
@@ -435,7 +444,7 @@ func (c *DelayConsumer) process(ctx context.Context, raw string, id int) {
 		)
 		opCtx, opCancel := c.internalOpContext()
 		defer opCancel()
-		if ackErr := c.driver.Ack(opCtx, c.processingKey(), raw); ackErr != nil {
+		if ackErr := c.driver.Ack(opCtx, c.keys.Processing, raw); ackErr != nil {
 			c.logger.Errorf("taskx: delay[%s][%d] ack(decode-err) failed: %v", c.runner.GetName(), id, ackErr)
 		}
 		return
@@ -450,7 +459,7 @@ func (c *DelayConsumer) process(ctx context.Context, raw string, id int) {
 	if result.IsOk {
 		opCtx, opCancel := c.internalOpContext()
 		defer opCancel()
-		if ackErr := c.driver.Ack(opCtx, c.processingKey(), raw); ackErr != nil {
+		if ackErr := c.driver.Ack(opCtx, c.keys.Processing, raw); ackErr != nil {
 			c.logger.Errorf("taskx: delay[%s][%d] ack failed: %v", c.runner.GetName(), id, ackErr)
 		}
 		return
@@ -477,7 +486,7 @@ func (c *DelayConsumer) process(ctx context.Context, raw string, id int) {
 		)
 		opCtx, opCancel := c.internalOpContext()
 		defer opCancel()
-		if err := c.driver.MoveToDead(opCtx, c.processingKey(), c.deadKey(), raw); err != nil {
+		if err := c.driver.MoveToDead(opCtx, c.keys.Processing, c.keys.Dead, raw); err != nil {
 			c.logger.Errorf("taskx: delay[%s][%d] move-to-dead failed: %v", c.runner.GetName(), id, err)
 		}
 		return
@@ -485,13 +494,13 @@ func (c *DelayConsumer) process(ctx context.Context, raw string, id int) {
 
 	newRaw := env.Encode()
 	var nextTime int64
-	now := time.Now().Unix()
-	if result.NextTime > now {
-		nextTime = result.NextTime
+	now := time.Now().UnixMicro()
+	if result.NextTime != nil && result.NextTime.UnixMicro() > now {
+		nextTime = result.NextTime.UnixMicro()
 	} else {
-		if result.NextTime > 0 {
+		if result.NextTime != nil {
 			c.logger.Warnf(
-				"taskx: delay[%s][%d] invalid next_time=%d, fallback to default retry schedule",
+				"taskx: delay[%s][%d] invalid next_time=%v, fallback to default retry schedule",
 				c.runner.GetName(), id, result.NextTime,
 			)
 		}
@@ -500,18 +509,15 @@ func (c *DelayConsumer) process(ctx context.Context, raw string, id int) {
 			retryBase = defaults.DelayRetryBaseInterval
 		}
 		retryDelay := time.Duration(env.RetryCount) * retryBase
-		retrySeconds := int64(retryDelay / time.Second)
-		if retryDelay%time.Second != 0 {
-			retrySeconds++
+		retryMicros := retryDelay.Microseconds()
+		if retryMicros < 1_000_000 {
+			retryMicros = 1_000_000
 		}
-		if retrySeconds < 1 {
-			retrySeconds = 1
-		}
-		nextTime = now + retrySeconds
+		nextTime = now + retryMicros
 	}
 	opCtx, opCancel := c.internalOpContext()
 	defer opCancel()
-	if err := c.driver.RetryRequeue(opCtx, c.processingKey(), c.pendingKey(), raw, newRaw, nextTime); err != nil {
+	if err := c.driver.RetryRequeue(opCtx, c.keys.Processing, c.keys.Pending, raw, newRaw, nextTime); err != nil {
 		c.logger.Errorf("taskx: delay[%s][%d] retry-requeue failed: %v", c.runner.GetName(), id, err)
 	}
 }

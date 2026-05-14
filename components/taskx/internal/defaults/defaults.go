@@ -18,6 +18,7 @@ const (
 	DelayDrainTimeout      = time.Second
 	HealthLenTimeout       = 2 * time.Second
 
+	RecoveryGracePeriod      = 30 * time.Second
 	RecoveryLockMargin       = 30 * time.Second
 	DefaultLockRenewInterval = time.Second
 	MinLockRenewInterval     = 200 * time.Millisecond

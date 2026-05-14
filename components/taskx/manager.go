@@ -9,6 +9,7 @@ import (
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/queue"
 )
 
 // consumer 内部消费器接口
@@ -28,18 +29,13 @@ type timerScheduler interface {
 // TimerSchedulerFactory 定时任务调度器工厂函数
 type TimerSchedulerFactory func(lk driver.LockDriver, prefix string, cfg *ManagerConfig) timerScheduler
 
-// EventConsumerFactory 事件队列消费器工厂函数
-type EventConsumerFactory func(
-	runner core.QueueRunner, opt core.RunnerOption,
-	eq driver.EventQueueDriver, lk driver.LockDriver,
-	cfg *ManagerConfig,
-) consumer
+// EventConsumerFactory 事件队列消费器工厂函数（按组创建）
+type EventConsumerFactory func(cfg queue.EventConsumerConfig) consumer
 
 // DelayConsumerFactory 延迟队列消费器工厂函数
 type DelayConsumerFactory func(
 	runner core.QueueRunner, opt core.RunnerOption,
-	dq driver.DelayQueueDriver, lk driver.LockDriver,
-	cfg *ManagerConfig,
+	cfg queue.DelayConsumerConfig,
 ) consumer
 
 // Manager 任务管理器，统一管理 EventQueue、DelayQueue、TimerTask 的生命周期
@@ -152,12 +148,33 @@ func (m *Manager) Start(ctx context.Context) error {
 		}
 	}()
 
-	// 启动 EventQueue 消费者
+	// 启动 EventQueue 消费者（按组聚合）
 	if m.cfg.EventDriver != nil && m.eventFactory != nil {
-		for _, entry := range entries.event {
-			c := m.eventFactory(entry.Runner, entry.Option, m.cfg.EventDriver, m.cfg.LockDriver, m.cfg)
+		baseCfg := m.buildConsumerConfig()
+		groups := m.groupEventEntries(entries.event)
+		for groupName, groupEntries := range groups {
+			runners := make(map[string]queue.EventRunnerEntry, len(groupEntries))
+			maxConsumer := 1
+			for _, entry := range groupEntries {
+				runners[entry.Runner.GetName()] = queue.EventRunnerEntry{
+					Runner: entry.Runner,
+					Option: entry.Option,
+				}
+				if entry.Option.ConsumerCount > maxConsumer {
+					maxConsumer = entry.Option.ConsumerCount
+				}
+			}
+			ecfg := queue.EventConsumerConfig{
+				ConsumerConfig: baseCfg,
+				Driver:         m.cfg.EventDriver,
+				PopTimeout:     m.cfg.EventPopTimeout,
+				Keys:           queue.NewQueueKeySet(m.cfg.KeyPrefix, "event", groupName),
+				Runners:        runners,
+				ConsumerCount:  maxConsumer,
+			}
+			c := m.eventFactory(ecfg)
 			if err := c.Start(ctx); err != nil {
-				return fmt.Errorf("taskx: start event[%s]: %w", entry.Runner.GetName(), err)
+				return fmt.Errorf("taskx: start event group[%s]: %w", groupName, err)
 			}
 			m.consumers = append(m.consumers, c)
 		}
@@ -165,8 +182,16 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	// 启动 DelayQueue 消费者
 	if m.cfg.DelayDriver != nil && m.delayFactory != nil {
+		baseCfg := m.buildConsumerConfig()
 		for _, entry := range entries.delay {
-			c := m.delayFactory(entry.Runner, entry.Option, m.cfg.DelayDriver, m.cfg.LockDriver, m.cfg)
+			dcfg := queue.DelayConsumerConfig{
+				ConsumerConfig:    baseCfg,
+				Driver:            m.cfg.DelayDriver,
+				PollInterval:      m.cfg.PollInterval,
+				RetryBaseInterval: m.cfg.DelayRetryBaseInterval,
+				Keys:              queue.NewQueueKeySet(m.cfg.KeyPrefix, "delay", entry.Runner.GetName()),
+			}
+			c := m.delayFactory(entry.Runner, entry.Option, dcfg)
 			if err := c.Start(ctx); err != nil {
 				return fmt.Errorf("taskx: start delay[%s]: %w", entry.Runner.GetName(), err)
 			}
@@ -417,12 +442,14 @@ func (m *Manager) refreshHealthSnapshot(ctx context.Context, running bool) {
 		Delay:     make(map[string]QueueListenerHealth, len(delayEntries)),
 	}
 
-	for name := range eventEntries {
-		item := QueueListenerHealth{LastBeatAt: eventBeat[name]}
+	eventGroups := m.groupEventEntries(eventEntries)
+	for groupName := range eventGroups {
+		keys := queue.NewQueueKeySet(m.cfg.KeyPrefix, "event", groupName)
+		item := QueueListenerHealth{LastBeatAt: eventBeat[groupName]}
 		item.Alive = !item.LastBeatAt.IsZero() && now.Sub(item.LastBeatAt) <= m.cfg.HealthBeatTimeout
 		if m.cfg.EventDriver != nil {
 			lenCtx, cancel := m.internalOpContext(ctx, defaults.HealthLenTimeout)
-			n, err := m.cfg.EventDriver.Len(lenCtx, fmt.Sprintf("%s:event:{%s}:pending", m.cfg.KeyPrefix, name))
+			n, err := m.cfg.EventDriver.Len(lenCtx, keys.Pending)
 			cancel()
 			if err != nil {
 				item.LenError = err.Error()
@@ -430,15 +457,16 @@ func (m *Manager) refreshHealthSnapshot(ctx context.Context, running bool) {
 				item.PendingLen = n
 			}
 		}
-		snap.Event[name] = item
+		snap.Event[groupName] = item
 	}
 
 	for name := range delayEntries {
+		keys := queue.NewQueueKeySet(m.cfg.KeyPrefix, "delay", name)
 		item := QueueListenerHealth{LastBeatAt: delayBeat[name]}
 		item.Alive = !item.LastBeatAt.IsZero() && now.Sub(item.LastBeatAt) <= m.cfg.HealthBeatTimeout
 		if m.cfg.DelayDriver != nil {
 			lenCtx, cancel := m.internalOpContext(ctx, defaults.HealthLenTimeout)
-			n, err := m.cfg.DelayDriver.Len(lenCtx, fmt.Sprintf("%s:delay:{%s}:pending", m.cfg.KeyPrefix, name))
+			n, err := m.cfg.DelayDriver.Len(lenCtx, keys.Pending)
 			cancel()
 			if err != nil {
 				item.LenError = err.Error()
@@ -622,6 +650,46 @@ func (m *Manager) internalOpContext(parent context.Context, timeout time.Duratio
 func (m *Manager) ensureRegistryLocked() {
 	if m.registry == nil {
 		m.registry = NewRegistry()
+	}
+}
+
+// groupEventEntries 按 QueueGroup 对 event runner 分组
+func (m *Manager) groupEventEntries(entries map[string]*EventEntry) map[string][]*EventEntry {
+	groups := make(map[string][]*EventEntry)
+	for _, entry := range entries {
+		group := entry.Option.QueueGroup
+		if group == "" {
+			group = core.DefaultEventQueueGroup
+		}
+		groups[group] = append(groups[group], entry)
+	}
+	return groups
+}
+
+// resolveEventGroupName 根据 runner name 解析所属的事件队列组名
+func (m *Manager) resolveEventGroupName(runnerName string) string {
+	entries := m.registry.GetEventRunners()
+	if entry, ok := entries[runnerName]; ok {
+		if entry.Option.QueueGroup != "" {
+			return entry.Option.QueueGroup
+		}
+		return core.DefaultEventQueueGroup
+	}
+	return runnerName
+}
+
+func (m *Manager) buildConsumerConfig() queue.ConsumerConfig {
+	return queue.ConsumerConfig{
+		Lock:                m.cfg.LockDriver,
+		Prefix:              m.cfg.KeyPrefix,
+		LockTTL:             m.cfg.LockTTL,
+		ProcTimeout:         m.cfg.ProcessingTimeout,
+		RecoveryGracePeriod: m.cfg.RecoveryGracePeriod,
+		InternalOpTimeout:   m.cfg.InternalOpTimeout,
+		TraceKey:            m.cfg.TraceContextKey,
+		Logger:              m.cfg.Logger,
+		OnAlert:             m.cfg.OnAlert,
+		OnHeartbeat:         m.cfg.OnHeartbeat,
 	}
 }
 

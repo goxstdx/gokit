@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/queue"
 )
 
 // PublishEvent 发布事件到 EventQueue，并返回创建的 Envelope。
@@ -30,9 +31,11 @@ func (m *Manager) PublishEventEnvelope(ctx context.Context, runnerName string, e
 		return nil, fmt.Errorf("taskx: envelope is nil")
 	}
 	env.Source = core.EnvelopeSourceEvent
-	key := fmt.Sprintf("%s:event:{%s}:pending", m.cfg.KeyPrefix, runnerName)
+	env.RunnerName = runnerName
+	groupName := m.resolveEventGroupName(runnerName)
+	keys := queue.NewQueueKeySet(m.cfg.KeyPrefix, "event", groupName)
 
-	if err := m.cfg.EventDriver.Push(ctx, key, env.Encode()); err != nil {
+	if err := m.cfg.EventDriver.Push(ctx, keys.Pending, env.Encode()); err != nil {
 		return nil, err
 	}
 	return env, nil

@@ -39,17 +39,18 @@ func AlertNotifyExample() {
 		}
 
 		executeAt := data.RunnerResult.NextTime
-		if executeAt <= time.Now().Unix() {
-			executeAt = time.Now().Add(time.Second).Unix()
+		if executeAt == nil || !executeAt.After(time.Now()) {
+			t := time.Now().Add(time.Second)
+			executeAt = &t
 		}
 
-		env, err := mgr.PublishDelayEnvelope(context.Background(), data.RunnerName, data.Envelope, executeAt)
+		env, err := mgr.PublishDelayEnvelope(context.Background(), data.RunnerName, data.Envelope, *executeAt)
 		if err != nil {
 			log.Warnf("taskx: alert notify republish failed, runner=%s err=%v", data.RunnerName, err)
 			return
 		}
 		log.Infof(
-			"taskx: alert notify republished to delay, runner=%s envelope_id=%s executeAt=%d",
+			"taskx: alert notify republished to delay, runner=%s envelope_id=%s executeAt=%v",
 			data.RunnerName,
 			env.ID,
 			executeAt,
@@ -96,7 +97,7 @@ func (r *rescheduleRunner) Run(ctx context.Context, payload string) core.RunnerF
 		return core.RunnerFuncResult{
 			IsOk:     false,
 			Err:      fmt.Errorf("need reschedule"),
-			NextTime: time.Now().Add(3 * time.Second).Unix(),
+			NextTime: core.TimePtr(time.Now().Add(3 * time.Second)),
 		}
 	}
 	return core.RunnerFuncResult{IsOk: true}

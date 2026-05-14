@@ -6,20 +6,30 @@ import "github.com/redis/go-redis/v9"
 // key 命名规范：taskx:<type>:{runner_name}:<suffix>
 // 花括号 {runner_name} 作为 HashTag，确保同一 runner 的所有 key 落在同一 slot。
 
-// scriptNack 从 processing 移除并推回 pending。
-// KEYS[1]=processing, KEYS[2]=pending, ARGV[1]=data
-var scriptNack = redis.NewScript(`
-local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
+// scriptEventPopToProcessing 原子地从 pending List 弹出并加入 processing ZSet。
+// KEYS[1]=pending(List), KEYS[2]=processing(ZSet), ARGV[1]=processingScore
+var scriptEventPopToProcessing = redis.NewScript(`
+local val = redis.call('RPOP', KEYS[1])
+if val then
+    redis.call('ZADD', KEYS[2], tonumber(ARGV[1]), val)
+end
+return val or ''
+`)
+
+// scriptEventNack 从 processing ZSet 移除并推回 pending List。
+// KEYS[1]=processing(ZSet), KEYS[2]=pending(List), ARGV[1]=data
+var scriptEventNack = redis.NewScript(`
+local removed = redis.call('ZREM', KEYS[1], ARGV[1])
 if removed > 0 then
     redis.call('LPUSH', KEYS[2], ARGV[1])
 end
 return removed
 `)
 
-// scriptMoveToDead 从 processing 移到死信队列。
-// KEYS[1]=processing, KEYS[2]=dead, ARGV[1]=data
-var scriptMoveToDead = redis.NewScript(`
-local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
+// scriptEventMoveToDead 从 processing ZSet 移到死信 List。
+// KEYS[1]=processing(ZSet), KEYS[2]=dead(List), ARGV[1]=data
+var scriptEventMoveToDead = redis.NewScript(`
+local removed = redis.call('ZREM', KEYS[1], ARGV[1])
 if removed > 0 then
     redis.call('LPUSH', KEYS[2], ARGV[1])
 end
@@ -102,14 +112,27 @@ end
 return moved
 `)
 
-// scriptEventRetryRequeue 重试时原子从 processing List 删旧值、向 pending List 推新值。
-// KEYS[1]=processing, KEYS[2]=pending, ARGV[1]=oldData, ARGV[2]=newData
+// scriptEventRetryRequeue 重试时原子从 processing ZSet 删旧值、向 pending List 推新值。
+// KEYS[1]=processing(ZSet), KEYS[2]=pending(List), ARGV[1]=oldData, ARGV[2]=newData
 var scriptEventRetryRequeue = redis.NewScript(`
-local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
+local removed = redis.call('ZREM', KEYS[1], ARGV[1])
 if removed > 0 then
     redis.call('LPUSH', KEYS[2], ARGV[2])
 end
 return removed
+`)
+
+// scriptEventRecoverProcessing 恢复超时的 processing ZSet 到 pending List（崩溃恢复）。
+// KEYS[1]=processing(ZSet), KEYS[2]=pending(List), ARGV[1]=timeoutScore, ARGV[2]=batchSize
+var scriptEventRecoverProcessing = redis.NewScript(`
+local items = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, tonumber(ARGV[2]))
+local moved = 0
+for _, v in ipairs(items) do
+    redis.call('ZREM', KEYS[1], v)
+    redis.call('LPUSH', KEYS[2], v)
+    moved = moved + 1
+end
+return moved
 `)
 
 // scriptDelayRetryRequeue 重试时原子从 processing ZSet 删旧值、向 pending ZSet 加新值。

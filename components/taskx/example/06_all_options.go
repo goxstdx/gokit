@@ -86,6 +86,8 @@ func AllOptionsExample(ctx context.Context, rdb redis.Cmdable) error {
 		taskx.WithProcessingTimeout(4*time.Minute),
 		// WithRecoverBatchSize：启动恢复时每批次处理消息数量（传递给 Redis provider）。
 		taskx.WithRecoverBatchSize(500),
+		// WithRecoveryGracePeriod：processing 中停留超过该时间的消息视为孤儿并恢复到 pending（默认 30s）。
+		taskx.WithRecoveryGracePeriod(30*time.Second),
 		// WithDefaultTimerTaskOption：全局 TimerTask 默认配置（单任务可覆盖）。
 		taskx.WithDefaultTimerTaskOption(
 			core.TimerTaskOption{
@@ -131,7 +133,7 @@ func AllOptionsExample(ctx context.Context, rdb redis.Cmdable) error {
 	if _, err := mgr.PublishDelay(
 		ctx,
 		&OrderNotifyRunner{OrderID: "ORD-1002", UserID: "USR-2002"},
-		time.Now().Add(2*time.Minute).Unix(),
+		time.Now().Add(2*time.Minute),
 	); err != nil {
 		return err
 	}

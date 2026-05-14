@@ -34,7 +34,7 @@ func (p *DelayQueueProvider) Add(ctx context.Context, queue string, data string,
 }
 
 func (p *DelayQueueProvider) TransferToProcessing(ctx context.Context, pendingQueue, processingQueue string, maxScore int64, count int64) ([]string, error) {
-	processingScore := time.Now().Unix()
+	processingScore := time.Now().UnixMicro()
 	result, err := scriptDelayTransfer.Run(ctx, p.rdb,
 		[]string{pendingQueue, processingQueue},
 		maxScore, count, processingScore,
@@ -84,7 +84,7 @@ func (p *DelayQueueProvider) Nack(ctx context.Context, processingQueue, pendingQ
 }
 
 func (p *DelayQueueProvider) MoveToDead(ctx context.Context, processingQueue, deadQueue string, data string) error {
-	deadAt := time.Now().Unix()
+	deadAt := time.Now().UnixMicro()
 	_, err := scriptDelayMoveToDead.Run(ctx, p.rdb,
 		[]string{processingQueue, deadQueue},
 		data, deadAt,
@@ -96,7 +96,7 @@ func (p *DelayQueueProvider) MoveToDead(ctx context.Context, processingQueue, de
 }
 
 func (p *DelayQueueProvider) RecoverDead(ctx context.Context, deadQueue, pendingQueue string, count int64) (int64, error) {
-	newScore := time.Now().Unix()
+	newScore := time.Now().UnixMicro()
 	result, err := scriptDelayRecoverDead.Run(ctx, p.rdb,
 		[]string{deadQueue, pendingQueue},
 		count, newScore,
@@ -125,8 +125,8 @@ func (p *DelayQueueProvider) PopFromDead(ctx context.Context, deadQueue string) 
 }
 
 func (p *DelayQueueProvider) RecoverProcessing(ctx context.Context, processingQueue, pendingQueue string, timeout time.Duration) (int64, error) {
-	timeoutScore := time.Now().Add(-timeout).Unix()
-	newScore := time.Now().Unix()
+	timeoutScore := time.Now().Add(-timeout).UnixMicro()
+	newScore := time.Now().UnixMicro()
 	result, err := scriptDelayRecoverProcessing.Run(ctx, p.rdb,
 		[]string{processingQueue, pendingQueue},
 		fmt.Sprintf("%d", timeoutScore), newScore, p.recoverBatch,

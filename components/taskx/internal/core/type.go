@@ -27,7 +27,7 @@ type RunnerFuncResult struct {
 	IsOk bool
 	Err  error
 
-	NextTime int64 // DelayQueue 失败重试的下次执行时间；EventQueue 返回该值时会告警并 Ack（不回 event 重试）
+	NextTime *time.Time // DelayQueue 失败重试的下次执行时间；EventQueue 返回该值时会告警并 Ack（不回 event 重试）
 }
 
 // TimerTaskRunner 定时任务接口
@@ -44,10 +44,14 @@ type TimerExecuteRequest struct {
 	Payload string // 透传给 TimerTaskRunner.Run
 }
 
+// DefaultEventQueueGroup 事件队列默认共享组名
+const DefaultEventQueueGroup = "_default_"
+
 // RunnerOption 队列 Runner 注册选项
 type RunnerOption struct {
-	MaxRetry      *int // 最大重试次数，超过后进入死信队列。nil=默认 3，IntPtr(0)=不重试
-	ConsumerCount int  // 并发消费者数量，默认 1
+	MaxRetry      *int   // 最大重试次数，超过后进入死信队列。nil=默认 3，IntPtr(0)=不重试
+	ConsumerCount int    // 并发消费者数量，默认 1；同组多 runner 取最大值
+	QueueGroup    string // 事件队列分组名。为空使用默认共享组，非空则使用指定组。仅对 EventQueue 生效。
 }
 
 // TimerTaskOption 定时任务注册选项
@@ -69,7 +73,10 @@ const (
 )
 
 // IntPtr 返回 int 值的指针，用于设置 MaxRetry 等可选字段
-func IntPtr(v int) *int { return new(v) }
+func IntPtr(v int) *int { p := v; return &p }
+
+// TimePtr 返回 time.Time 值的指针，用于设置 NextTime 等可选字段
+func TimePtr(t time.Time) *time.Time { return &t }
 
 // TimerConcurrencyPolicyPtr 返回并发策略指针，用于设置可选字段
 func TimerConcurrencyPolicyPtr(v TimerConcurrencyPolicy) *TimerConcurrencyPolicy { return &v }
@@ -138,6 +145,8 @@ const (
 	AlertRecoveryExceeded AlertType = "recovery_exceeded"
 	// AlertQueuePressure 队列积压
 	AlertQueueBacklog AlertType = "queue_backlog"
+	// AlertUnknownRunner 聚合队列中消息的 RunnerName 找不到对应的已注册 Runner
+	AlertUnknownRunner AlertType = "unknown_runner"
 )
 
 func (o RunnerOption) Normalize() RunnerOption {
@@ -200,6 +209,7 @@ const (
 // ID 保证每条消息的唯一性，避免 DelayQueue ZSet member 去重导致消息丢失。
 type Envelope struct {
 	ID         string         `json:"id"`
+	RunnerName string         `json:"runner_name"` // 消息所属 runner，EventQueue 聚合队列路由分发用
 	Payload    string         `json:"payload"`
 	RetryCount int            `json:"retry_count"`
 	CreatedAt  int64          `json:"created_at"`
