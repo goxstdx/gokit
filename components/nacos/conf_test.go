@@ -15,13 +15,7 @@ func TestConfValidateApplyDefaults(t *testing.T) {
 	if conf.Scheme != DefaultScheme {
 		t.Fatalf("expected default scheme %q, got %q", DefaultScheme, conf.Scheme)
 	}
-	if conf.File == nil {
-		t.Fatal("expected File to be initialized")
-	}
 
-	if conf.Auth == nil {
-		t.Fatal("expected Auth to be initialized")
-	}
 	if conf.Auth.Mode != DefaultAuthMode {
 		t.Fatalf("expected default auth mode %q, got %q", DefaultAuthMode, conf.Auth.Mode)
 	}
@@ -60,7 +54,7 @@ func TestConfValidateAuthRequiredNeedsCredentials(t *testing.T) {
 	conf := Conf{
 		Ipaddr: "127.0.0.1",
 		Port:   8848,
-		Auth: &AuthConf{
+		Auth: AuthConf{
 			Mode: AuthModeRequired,
 		},
 	}
@@ -74,7 +68,7 @@ func TestConfValidateWithDataIdRequiresFileTarget(t *testing.T) {
 	conf := Conf{
 		Ipaddr: "127.0.0.1",
 		Port:   8848,
-		File: &ConfigFile{
+		File: ConfigFile{
 			Group: "G1",
 		},
 	}

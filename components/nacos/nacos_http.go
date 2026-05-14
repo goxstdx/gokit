@@ -78,7 +78,7 @@ func (n *NacosHTTP) GetDefaultConfigWithContext(ctx context.Context) (string, er
 		return "", err
 	}
 
-	return n.getConfigWithRetry(ctx, n.defaultFile())
+	return n.getConfigWithRetry(ctx, n.conf.File)
 }
 
 // GetConfig fetches configuration for the specified dataId and group.
@@ -390,21 +390,6 @@ func (n *NacosHTTP) hasAuthCredentials() bool {
 
 func (n *NacosHTTP) authCredentials() (string, string) {
 	return n.conf.Auth.UserName, n.conf.Auth.Password
-}
-
-func (n *NacosHTTP) defaultFile() ConfigFile {
-	if n.conf.File == nil {
-		return ConfigFile{}
-	}
-
-	return *n.conf.File
-}
-
-func (n *NacosHTTP) configFileWith(dataId, group string) ConfigFile {
-	file := n.defaultFile()
-	file.DataId = dataId
-	file.Group = group
-	return file
 }
 
 func (n *NacosHTTP) baseURL() string {

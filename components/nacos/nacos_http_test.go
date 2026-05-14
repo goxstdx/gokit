@@ -18,12 +18,12 @@ func getTestConf(t *testing.T) Conf {
 	conf := Conf{
 		Ipaddr: "192.168.96.247",
 		Port:   18848,
-		File: &ConfigFile{
+		File: ConfigFile{
 			NamespaceId: "local",
 			DataId:      "vehicle-rate-factor.yaml",
 			Group:       "DEFAULT_GROUP",
 		},
-		Auth: &AuthConf{
+		Auth: AuthConf{
 			Mode:     AuthModeAuto,
 			UserName: "test",
 			Password: "8hJ1mxWS6LnntyT0",
@@ -33,7 +33,7 @@ func getTestConf(t *testing.T) Conf {
 		LogDir:              "tmp/nacos/log/",
 		CacheDir:            "tmp/nacos/cache",
 	}
-	if conf.Ipaddr == "" || conf.File == nil || conf.File.DataId == "" || conf.File.Group == "" {
+	if conf.Ipaddr == "" || conf.File.DataId == "" || conf.File.Group == "" {
 		t.Skip("skip real nacos test: set NACOS_TEST_IP/NACOS_TEST_DATA_ID/NACOS_TEST_GROUP/NACOS_TEST_PORT")
 	}
 
@@ -62,7 +62,7 @@ func TestNacosHTTPGetConfig(t *testing.T) {
 		t.Fatalf("NewNacosHTTP returned error: %v", err)
 	}
 
-	got, err := client.GetConfig(*conf.File)
+	got, err := client.GetConfig(conf.File)
 	if err != nil {
 		t.Fatalf("GetConfig returned error: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestNacosHTTPListenConfigHotUpdateByPolling(t *testing.T) {
 
 	err = client.ListenConfig(
 		ListenConfig{
-			File: *conf.File,
+			File: conf.File,
 			OnChange: func(file ConfigFile, data string) {
 				if file.DataId != conf.File.DataId {
 					errCh <- &testError{msg: "unexpected dataId: " + file.DataId}
@@ -191,10 +191,22 @@ func TestNacosHTTPListenConfigWithMultipleTargetsAndStopByTarget(t *testing.T) {
 		events <- event{file: file, data: data}
 	}
 
-	if err := client.ListenConfigWithTarget(ListenConfig{File: fileA, OnChange: onChange, OnErr: func(err error) { errCh <- err }}); err != nil {
+	if err := client.ListenConfigWithTarget(
+		ListenConfig{
+			File:     fileA,
+			OnChange: onChange,
+			OnErr:    func(err error) { errCh <- err },
+		},
+	); err != nil {
 		t.Fatalf("ListenConfigWithTarget(fileA) returned error: %v", err)
 	}
-	if err := client.ListenConfigWithTarget(ListenConfig{File: fileB, OnChange: onChange, OnErr: func(err error) { errCh <- err }}); err != nil {
+	if err := client.ListenConfigWithTarget(
+		ListenConfig{
+			File:     fileB,
+			OnChange: onChange,
+			OnErr:    func(err error) { errCh <- err },
+		},
+	); err != nil {
 		t.Fatalf("ListenConfigWithTarget(fileB) returned error: %v", err)
 	}
 
@@ -350,12 +362,12 @@ func mockConfFromServer(t *testing.T, serverURL string) Conf {
 		Scheme: Scheme(parsed.Scheme),
 		Ipaddr: host,
 		Port:   port,
-		File: &ConfigFile{
+		File: ConfigFile{
 			NamespaceId: "local",
 			DataId:      "exist.yaml",
 			Group:       "DEFAULT_GROUP",
 		},
-		Auth: &AuthConf{
+		Auth: AuthConf{
 			Mode: AuthModeDisabled,
 		},
 		Retry: &RetryConf{

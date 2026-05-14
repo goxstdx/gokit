@@ -78,9 +78,9 @@ type Conf struct {
 	Scheme Scheme
 	Ipaddr string
 	Port   uint64
-	File   *ConfigFile
+	File   ConfigFile
 
-	Auth      *AuthConf
+	Auth      AuthConf
 	TimeoutMs uint64
 	Retry     *RetryConf
 
@@ -99,14 +99,9 @@ func (c *Conf) applyDefaults() {
 			Interval:   DefaultRetryInterval,
 		}
 	}
-	if c.Auth == nil {
-		c.Auth = &AuthConf{}
-	}
+
 	if c.Scheme == "" {
 		c.Scheme = DefaultScheme
-	}
-	if c.File == nil {
-		c.File = &ConfigFile{}
 	}
 
 	if c.Auth.Mode == "" {
@@ -130,6 +125,13 @@ func (c *Conf) Validate() error {
 	if c.Scheme != SchemeHTTP && c.Scheme != SchemeHTTPS {
 		return fmt.Errorf("nacos: Scheme must be %q or %q, got %q", SchemeHTTP, SchemeHTTPS, c.Scheme)
 	}
+	if c.Ipaddr == "" {
+		return fmt.Errorf("nacos: Ipaddr is required")
+	}
+	if c.Port == 0 {
+		return fmt.Errorf("nacos: Port is required")
+	}
+
 	if c.Auth.Mode != AuthModeAuto && c.Auth.Mode != AuthModeRequired && c.Auth.Mode != AuthModeDisabled {
 		return fmt.Errorf(
 			"nacos: Auth.Mode must be %q, %q or %q, got %q",
@@ -139,12 +141,7 @@ func (c *Conf) Validate() error {
 			c.Auth.Mode,
 		)
 	}
-	if c.Ipaddr == "" {
-		return fmt.Errorf("nacos: Ipaddr is required")
-	}
-	if c.Port == 0 {
-		return fmt.Errorf("nacos: Port is required")
-	}
+
 	if (c.Auth.UserName == "") != (c.Auth.Password == "") {
 		return fmt.Errorf("nacos: Auth.UserName and Auth.Password must be both set or both empty")
 	}
@@ -154,6 +151,7 @@ func (c *Conf) Validate() error {
 	if c.Auth.Mode == AuthModeDisabled && (c.Auth.UserName != "" || c.Auth.Password != "") {
 		return fmt.Errorf("nacos: Auth.UserName/Auth.Password must be empty when Auth.Mode is %q", AuthModeDisabled)
 	}
+
 	if c.Retry.MaxRetries < 0 {
 		return fmt.Errorf("nacos: Retry.MaxRetries must be >= 0")
 	}
