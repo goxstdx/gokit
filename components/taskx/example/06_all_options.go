@@ -8,7 +8,7 @@ import (
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 	redisx "gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/provider/redis"
 )
 
@@ -17,11 +17,13 @@ import (
 // - 包含 Event / Delay / Timer 三类任务注册
 // - 演示启动、投递、健康快照和停止的完整流程
 func AllOptionsExample(ctx context.Context, rdb redis.Cmdable) error {
-	log, _ := logger_factory.NewLogger(logger_factory.Config{
-		DriverType:  logger_factory.DriverZap,
-		Level:       logger_factory.LevelInfo,
-		Development: true,
-	})
+	log, _ := logger_factory.NewLogger(
+		logger_factory.Config{
+			DriverType:  logger_factory.DriverZap,
+			Level:       logger_factory.LevelInfo,
+			Development: true,
+		},
+	)
 
 	registry := taskx.NewRegistry()
 

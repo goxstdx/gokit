@@ -13,16 +13,18 @@ import (
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 )
 
 // AlertNotifyExample 展示如何在告警回调中接收 NextTime 通知，并由业务决定是否转投 DelayQueue。
 func AlertNotifyExample() {
-	log, _ := logger_factory.NewLogger(logger_factory.Config{
-		DriverType:  logger_factory.DriverZap,
-		Level:       logger_factory.LevelInfo,
-		Development: true,
-	})
+	log, _ := logger_factory.NewLogger(
+		logger_factory.Config{
+			DriverType:  logger_factory.DriverZap,
+			Level:       logger_factory.LevelInfo,
+			Development: true,
+		},
+	)
 
 	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
 	registry := taskx.NewRegistry()
@@ -46,7 +48,12 @@ func AlertNotifyExample() {
 			log.Warnf("taskx: alert notify republish failed, runner=%s err=%v", data.RunnerName, err)
 			return
 		}
-		log.Infof("taskx: alert notify republished to delay, runner=%s envelope_id=%s executeAt=%d", data.RunnerName, env.ID, executeAt)
+		log.Infof(
+			"taskx: alert notify republished to delay, runner=%s envelope_id=%s executeAt=%d",
+			data.RunnerName,
+			env.ID,
+			executeAt,
+		)
 	}
 
 	mgr = taskx.NewRedisManager(

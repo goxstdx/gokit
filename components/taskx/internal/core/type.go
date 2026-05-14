@@ -92,6 +92,8 @@ type AlertData struct {
 	RunnerName   string
 	Envelope     *Envelope
 	RunnerResult RunnerFuncResult
+
+	Remark string
 }
 
 // AlertFunc 异常告警回调。当框架遇到无法自动处理的异常（如消息格式损坏、重试全部失败等）时调用，
@@ -134,6 +136,8 @@ const (
 	AlertRecoveryLockLost AlertType = "recovery_lock_lost"
 	// AlertRecoveryExceeded 启动恢复耗时超过上限，提前终止避免无限恢复
 	AlertRecoveryExceeded AlertType = "recovery_exceeded"
+	// AlertQueuePressure 队列积压
+	AlertQueueBacklog AlertType = "queue_backlog"
 )
 
 func (o RunnerOption) Normalize() RunnerOption {

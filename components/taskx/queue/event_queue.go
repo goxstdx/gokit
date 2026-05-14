@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
 )
 
@@ -93,11 +93,13 @@ func (c *EventConsumer) beat() {
 	if c.onHeartbeat == nil {
 		return
 	}
-	c.onHeartbeat(core.ListenerHeartbeat{
-		Kind: core.ListenerKindEvent,
-		Name: c.runner.GetName(),
-		At:   time.Now(),
-	})
+	c.onHeartbeat(
+		core.ListenerHeartbeat{
+			Kind: core.ListenerKindEvent,
+			Name: c.runner.GetName(),
+			At:   time.Now(),
+		},
+	)
 }
 
 func (c *EventConsumer) internalOpContext() (context.Context, context.CancelFunc) {
@@ -264,7 +266,10 @@ func (c *EventConsumer) startRecoverRenewLoop(lockKey string, lockTTL time.Durat
 					continue
 				}
 				if !ok {
-					err := fmt.Errorf("taskx: event[%s] recovery lock lost, duplicate recovery may happen", c.runner.GetName())
+					err := fmt.Errorf(
+						"taskx: event[%s] recovery lock lost, duplicate recovery may happen",
+						c.runner.GetName(),
+					)
 					c.logger.Warnf("%v", err)
 					c.alert(
 						core.AlertData{

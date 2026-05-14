@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 )
 
 // OrderNotifyRunner 订单通知 Runner（EventQueue / DelayQueue 用）

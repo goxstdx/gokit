@@ -7,8 +7,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 	redisx "gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/provider/redis"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/queue"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/timer"

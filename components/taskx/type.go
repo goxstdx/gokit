@@ -1,6 +1,8 @@
 package taskx
 
-import "gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
+import (
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
+)
 
 // 重新导出 core 包中的类型，使外部使用方可以直接通过 taskx 包访问
 
@@ -18,6 +20,7 @@ type Logger = core.Logger
 type AlertFunc = core.AlertFunc
 type AlertType = core.AlertType
 type AlertSource = core.AlertSource
+type AlertData = core.AlertData
 
 const (
 	TimerConcurrencyForbidOverlap = core.TimerConcurrencyForbidOverlap

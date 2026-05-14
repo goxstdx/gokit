@@ -3,8 +3,8 @@ package taskx
 import (
 	"time"
 
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
 )
 
@@ -13,9 +13,11 @@ type Option func(*ManagerConfig)
 
 // ManagerConfig 管理器配置
 type ManagerConfig struct {
-	EventDriver            driver.EventQueueDriver
-	DelayDriver            driver.DelayQueueDriver
-	LockDriver             driver.LockDriver
+	EventDriver driver.EventQueueDriver
+	DelayDriver driver.DelayQueueDriver
+	LockDriver  driver.LockDriver
+	Logger      core.Logger
+
 	KeyPrefix              string
 	PollInterval           time.Duration
 	EventPopTimeout        time.Duration
@@ -26,7 +28,6 @@ type ManagerConfig struct {
 	ProcessingTimeout      time.Duration
 	RecoverBatchSize       int64 // 崩溃恢复每批次移动的消息数量
 	DefaultTimerTask       core.TimerTaskOption
-	Logger                 core.Logger
 	OnAlert                core.AlertFunc // 异常告警回调，nil 时仅记录日志
 	AlertQueueSize         int            // 异常告警内部通道容量，满时丢弃并记录日志
 	TraceContextKey        string         // 执行 Run 时注入 Envelope.ID 的 context key

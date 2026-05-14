@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 )
 
 func newInternalTestLogger(t *testing.T) core.Logger {

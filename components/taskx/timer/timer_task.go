@@ -8,8 +8,8 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
 )
 
@@ -70,11 +70,13 @@ func (s *Scheduler) beat() {
 	if s.onBeat == nil {
 		return
 	}
-	s.onBeat(core.ListenerHeartbeat{
-		Kind: core.ListenerKindTimer,
-		Name: "cron",
-		At:   time.Now(),
-	})
+	s.onBeat(
+		core.ListenerHeartbeat{
+			Kind: core.ListenerKindTimer,
+			Name: "cron",
+			At:   time.Now(),
+		},
+	)
 }
 
 func (s *Scheduler) internalOpContext(parent context.Context) (context.Context, context.CancelFunc) {
@@ -167,10 +169,13 @@ func (s *Scheduler) runTask(name string, task core.TimerTaskRunner, opt core.Tim
 	s.logger.Errorf("taskx: timer[%s] all %d attempts failed", name, maxAttempts)
 	s.alert(
 		core.AlertData{
-			Source:       core.AlertSourceTimer,
-			AlertType:    core.AlertTimerAllAttemptsFailed,
-			RunnerName:   name,
-			RunnerResult: core.RunnerFuncResult{IsOk: false, Err: fmt.Errorf("timer[%s] all %d attempts failed", name, maxAttempts)},
+			Source:     core.AlertSourceTimer,
+			AlertType:  core.AlertTimerAllAttemptsFailed,
+			RunnerName: name,
+			RunnerResult: core.RunnerFuncResult{
+				IsOk: false,
+				Err:  fmt.Errorf("timer[%s] all %d attempts failed", name, maxAttempts),
+			},
 		},
 	)
 }

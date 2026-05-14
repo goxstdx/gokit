@@ -6,20 +6,21 @@ import (
 	"sync"
 	"time"
 
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
 )
 
 // DelayConsumer 延迟队列消费管理器
 // 单一轮询协程取出到期任务，投入 channel 由 N 个 worker 并发执行
 type DelayConsumer struct {
-	runner            core.QueueRunner
-	option            core.RunnerOption
-	driver            driver.DelayQueueDriver
-	lock              driver.LockDriver
+	runner core.QueueRunner
+	option core.RunnerOption
+	driver driver.DelayQueueDriver
+	lock   driver.LockDriver
+	logger core.Logger
+
 	prefix            string
-	logger            core.Logger
 	onAlert           core.AlertFunc
 	onHeartbeat       core.ListenerHeartbeatFunc
 	traceKey          string
@@ -98,11 +99,13 @@ func (c *DelayConsumer) beat() {
 	if c.onHeartbeat == nil {
 		return
 	}
-	c.onHeartbeat(core.ListenerHeartbeat{
-		Kind: core.ListenerKindDelay,
-		Name: c.runner.GetName(),
-		At:   time.Now(),
-	})
+	c.onHeartbeat(
+		core.ListenerHeartbeat{
+			Kind: core.ListenerKindDelay,
+			Name: c.runner.GetName(),
+			At:   time.Now(),
+		},
+	)
 }
 
 func (c *DelayConsumer) internalOpContext() (context.Context, context.CancelFunc) {
@@ -307,7 +310,10 @@ func (c *DelayConsumer) startRecoverRenewLoop(lockKey string, lockTTL time.Durat
 					continue
 				}
 				if !ok {
-					err := fmt.Errorf("taskx: delay[%s] recovery lock lost, duplicate recovery may happen", c.runner.GetName())
+					err := fmt.Errorf(
+						"taskx: delay[%s] recovery lock lost, duplicate recovery may happen",
+						c.runner.GetName(),
+					)
 					c.logger.Warnf("%v", err)
 					c.alert(
 						core.AlertData{
@@ -357,12 +363,35 @@ func (c *DelayConsumer) poll(ctx context.Context) {
 // pending，减少依赖崩溃恢复的等待时间（默认 processingTimeout=5min）。但鉴于 Stop 本身
 // 低频且崩溃恢复已兜底，当前设计优先保证停止速度，避免阻塞 pod 销毁。
 func (c *DelayConsumer) fetch(ctx context.Context) {
+	// 如果 chan 长度已经达到上限，跳过本次 fetch
+	if len(c.taskCh) >= cap(c.taskCh) {
+		c.logger.Warnf("taskx: delay[%s] channel full, skip fetch", c.runner.GetName())
+
+		c.alert(
+			core.AlertData{
+				AlertType:  core.AlertQueueBacklog,
+				RunnerName: c.runner.GetName(),
+				Remark:     "队列积压",
+			},
+		)
+
+		return
+	}
+
 	now := time.Now().Unix()
 	batchSize := int64(c.option.ConsumerCount * 2)
 	if batchSize < 10 {
 		batchSize = 10
 	}
 
+	c.logger.Debugf(
+		"taskx: delay[%s] fetch pending items, now: %d, batch size: %d, pending key: %s, processing key: %s",
+		c.runner.GetName(),
+		now,
+		batchSize,
+		c.pendingKey(),
+		c.processingKey(),
+	)
 	items, err := c.driver.TransferToProcessing(ctx, c.pendingKey(), c.processingKey(), now, batchSize)
 	if err != nil {
 		if ctx.Err() != nil {
