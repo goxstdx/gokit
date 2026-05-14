@@ -70,16 +70,20 @@ func NewDelayConsumer(
 	}
 }
 
+func (c *DelayConsumer) BuildKey() string {
+	return fmt.Sprintf("%s:delay:{%s}", c.prefix, c.runner.GetName())
+}
+
 func (c *DelayConsumer) pendingKey() string {
-	return fmt.Sprintf("%s:delay:{%s}:pending", c.prefix, c.runner.GetName())
+	return fmt.Sprintf("%s:pending", c.BuildKey())
 }
 
 func (c *DelayConsumer) processingKey() string {
-	return fmt.Sprintf("%s:delay:{%s}:processing", c.prefix, c.runner.GetName())
+	return fmt.Sprintf("%s:processing", c.BuildKey())
 }
 
 func (c *DelayConsumer) deadKey() string {
-	return fmt.Sprintf("%s:delay:{%s}:dead", c.prefix, c.runner.GetName())
+	return fmt.Sprintf("%s:dead", c.BuildKey())
 }
 
 func (c *DelayConsumer) recoveryLockKey() string {
@@ -195,7 +199,7 @@ func (c *DelayConsumer) Stop() {
 	c.logger.Infof("taskx: delay[%s] stopped", c.runner.GetName())
 }
 
-// startupRecover 启动时一次性恢复：抢锁 → 等待 processingTimeout → 恢复残留消息 → 退出
+// startupRecover 启动时一次性恢复：抢锁 → 直接恢复超时残留消息 → 退出
 func (c *DelayConsumer) startupRecover(ctx context.Context) {
 	defer c.wg.Done()
 
@@ -223,17 +227,6 @@ func (c *DelayConsumer) startupRecover(ctx context.Context) {
 	}()
 	stopRenew, lockLost := c.startRecoverRenewLoop(lockKey, lockTTL)
 	defer stopRenew()
-
-	c.logger.Infof(
-		"taskx: delay[%s] recovery waiting %v for in-flight messages to finish",
-		c.runner.GetName(),
-		c.procTimeout,
-	)
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(c.procTimeout):
-	}
 
 	// DelayQueue 的 processing 使用 ZSet score 记录进入 processing 的时间；这里只恢复超过
 	// processingTimeout 的消息。若业务处理耗时超过该值，仍可能发生重复投递，业务侧需保持幂等。
@@ -384,7 +377,7 @@ func (c *DelayConsumer) fetch(ctx context.Context) {
 		batchSize = 10
 	}
 
-	c.logger.Debugf(
+	c.logger.Infof(
 		"taskx: delay[%s] fetch pending items, now: %d, batch size: %d, pending key: %s, processing key: %s",
 		c.runner.GetName(),
 		now,

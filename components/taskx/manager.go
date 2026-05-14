@@ -3,7 +3,6 @@ package taskx
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +15,7 @@ import (
 type consumer interface {
 	Start(ctx context.Context) error
 	Stop()
+	BuildKey() string
 }
 
 // timerScheduler 内部定时任务调度器接口
@@ -117,39 +117,9 @@ func NewManager(registry *Registry, opts ...Option) *Manager {
 	}
 }
 
-// SetEventConsumerFactory 设置事件队列消费器工厂
-func (m *Manager) SetEventConsumerFactory(f EventConsumerFactory) {
-	m.eventFactory = f
-}
-
-// SetDelayConsumerFactory 设置延迟队列消费器工厂
-func (m *Manager) SetDelayConsumerFactory(f DelayConsumerFactory) {
-	m.delayFactory = f
-}
-
-// SetTimerSchedulerFactory 设置定时任务调度器工厂
-func (m *Manager) SetTimerSchedulerFactory(f TimerSchedulerFactory) {
-	m.timerFactory = f
-}
-
 // Config 获取管理器配置
 func (m *Manager) Config() *ManagerConfig {
 	return m.cfg
-}
-
-// SetRegistry 设置注册中心（仅允许在未运行状态下设置）。
-// 传入 nil 会自动替换为空注册中心。
-func (m *Manager) SetRegistry(registry *Registry) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.running {
-		return fmt.Errorf("taskx: cannot set registry while manager is running")
-	}
-	if registry == nil {
-		registry = NewRegistry()
-	}
-	m.registry = registry
-	return nil
 }
 
 // CheckStartReady 校验当前配置是否满足启动条件。
@@ -295,132 +265,6 @@ func (m *Manager) Stop(ctx context.Context) error {
 	snapCancel()
 	m.cfg.Logger.Infof("taskx: manager stopped")
 	return nil
-}
-
-// PublishEvent 发布事件到 EventQueue，并返回创建的 Envelope。
-func (m *Manager) PublishEvent(ctx context.Context, runner core.QueueRunner) (*core.Envelope, error) {
-	return m.PublishEventPayload(ctx, runner.GetName(), runner.Marshal())
-}
-
-// PublishDelay 发布延迟任务到 DelayQueue，并返回创建的 Envelope。
-func (m *Manager) PublishDelay(ctx context.Context, runner core.QueueRunner, executeAt int64) (*core.Envelope, error) {
-	return m.PublishDelayPayload(ctx, runner.GetName(), runner.Marshal(), executeAt)
-}
-
-// PublishEventPayload 直接将 payload 包装为新消息并发布到 EventQueue。
-func (m *Manager) PublishEventPayload(ctx context.Context, runnerName string, payload string) (*core.Envelope, error) {
-	if m.cfg.EventDriver == nil {
-		return nil, fmt.Errorf("taskx: event queue driver not configured")
-	}
-	env := core.NewEnvelope(payload, core.EnvelopeSourceEvent)
-	return m.PublishEventEnvelope(ctx, runnerName, env)
-}
-
-// PublishEventEnvelope 将指定 Envelope 发布到 EventQueue。
-func (m *Manager) PublishEventEnvelope(ctx context.Context, runnerName string, env *core.Envelope) (*core.Envelope, error) {
-	if m.cfg.EventDriver == nil {
-		return nil, fmt.Errorf("taskx: event queue driver not configured")
-	}
-	if env == nil {
-		return nil, fmt.Errorf("taskx: envelope is nil")
-	}
-	env.Source = core.EnvelopeSourceEvent
-	key := fmt.Sprintf("%s:event:{%s}:pending", m.cfg.KeyPrefix, runnerName)
-	if err := m.cfg.EventDriver.Push(ctx, key, env.Encode()); err != nil {
-		return nil, err
-	}
-	return env, nil
-}
-
-// PublishDelayPayload 直接将 payload 包装为新消息并发布到 DelayQueue。
-func (m *Manager) PublishDelayPayload(
-	ctx context.Context,
-	runnerName string,
-	payload string,
-	executeAt int64,
-) (*core.Envelope, error) {
-	if m.cfg.DelayDriver == nil {
-		return nil, fmt.Errorf("taskx: delay queue driver not configured")
-	}
-	env := core.NewEnvelope(payload, core.EnvelopeSourceDelay)
-	return m.PublishDelayEnvelope(ctx, runnerName, env, executeAt)
-}
-
-// PublishDelayEnvelope 将指定 Envelope 发布到 DelayQueue。
-func (m *Manager) PublishDelayEnvelope(
-	ctx context.Context,
-	runnerName string,
-	env *core.Envelope,
-	executeAt int64,
-) (*core.Envelope, error) {
-	if m.cfg.DelayDriver == nil {
-		return nil, fmt.Errorf("taskx: delay queue driver not configured")
-	}
-	if env == nil {
-		return nil, fmt.Errorf("taskx: envelope is nil")
-	}
-	if executeAt <= 0 {
-		return nil, fmt.Errorf("taskx: invalid executeAt=%d, must be a positive unix time", executeAt)
-	}
-	env.Source = core.EnvelopeSourceDelay
-	key := fmt.Sprintf("%s:delay:{%s}:pending", m.cfg.KeyPrefix, runnerName)
-	if err := m.cfg.DelayDriver.Add(ctx, key, env.Encode(), executeAt); err != nil {
-		return nil, err
-	}
-	return env, nil
-}
-
-// ExecuteTimerTaskOnce 按任务名手动执行一次定时任务。
-// 该方法始终使用固定锁 key（taskx:lock:timer:{name}）防止与定时触发/其他手动触发并发撞车。
-func (m *Manager) ExecuteTimerTaskOnce(ctx context.Context, req core.TimerExecuteRequest) (core.RunnerFuncResult, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	name := strings.TrimSpace(req.Name)
-	if name == "" {
-		return core.RunnerFuncResult{
-			IsOk: false,
-			Err:  fmt.Errorf("taskx: timer task name is required"),
-		}, fmt.Errorf("taskx: timer task name is required")
-	}
-	if m.cfg.LockDriver == nil {
-		return core.RunnerFuncResult{
-			IsOk: false,
-			Err:  fmt.Errorf("taskx: lock driver not configured"),
-		}, fmt.Errorf("taskx: lock driver not configured")
-	}
-
-	entry, ok := m.registry.GetTimerTasks()[name]
-	if !ok || entry == nil || entry.Task == nil {
-		return core.RunnerFuncResult{
-			IsOk: false,
-			Err:  fmt.Errorf("taskx: timer task %q not registered", name),
-		}, fmt.Errorf("taskx: timer task %q not registered", name)
-	}
-
-	lockKey := fmt.Sprintf("%s:lock:timer:{%s}", m.cfg.KeyPrefix, name)
-	lockCtx, lockCancel := m.internalOpContext(ctx, 0)
-	locked, err := m.cfg.LockDriver.Lock(lockCtx, lockKey, m.cfg.LockTTL)
-	lockCancel()
-	if err != nil {
-		return core.RunnerFuncResult{
-			IsOk: false,
-			Err:  fmt.Errorf("taskx: acquire timer task lock %q: %w", name, err),
-		}, fmt.Errorf("taskx: acquire timer task lock %q: %w", name, err)
-	}
-	if !locked {
-		return core.RunnerFuncResult{
-			IsOk: false,
-			Err:  fmt.Errorf("taskx: timer task %q is already running", name),
-		}, fmt.Errorf("taskx: timer task %q is already running", name)
-	}
-	defer func() {
-		unlockCtx, unlockCancel := m.internalOpContext(context.Background(), 0)
-		defer unlockCancel()
-		_ = m.cfg.LockDriver.Unlock(unlockCtx, lockKey)
-	}()
-
-	return entry.Task.Run(ctx, req.Payload), nil
 }
 
 // Registry 获取注册中心

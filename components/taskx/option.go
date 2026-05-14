@@ -1,6 +1,7 @@
 package taskx
 
 import (
+	"strings"
 	"time"
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
@@ -72,7 +73,7 @@ func WithLockDriver(d driver.LockDriver) Option {
 }
 
 func WithKeyPrefix(prefix string) Option {
-	return func(c *ManagerConfig) { c.KeyPrefix = prefix }
+	return func(c *ManagerConfig) { c.KeyPrefix = strings.TrimRight(prefix, ":") }
 }
 
 func WithPollInterval(d time.Duration) Option {

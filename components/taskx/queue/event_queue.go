@@ -64,16 +64,20 @@ func NewEventConsumer(
 	}
 }
 
+func (c *EventConsumer) BuildKey() string {
+	return fmt.Sprintf("%s:event:{%s}", c.prefix, c.runner.GetName())
+}
+
 func (c *EventConsumer) pendingKey() string {
-	return fmt.Sprintf("%s:event:{%s}:pending", c.prefix, c.runner.GetName())
+	return fmt.Sprintf("%s:pending", c.BuildKey())
 }
 
 func (c *EventConsumer) processingKey() string {
-	return fmt.Sprintf("%s:event:{%s}:processing", c.prefix, c.runner.GetName())
+	return fmt.Sprintf("%s:processing", c.BuildKey())
 }
 
 func (c *EventConsumer) deadKey() string {
-	return fmt.Sprintf("%s:event:{%s}:dead", c.prefix, c.runner.GetName())
+	return fmt.Sprintf("%s:dead", c.BuildKey())
 }
 
 func (c *EventConsumer) recoveryLockKey() string {
@@ -189,6 +193,8 @@ func (c *EventConsumer) startupRecover(ctx context.Context) {
 		return
 	case <-time.After(c.procTimeout):
 	}
+
+	c.logger.Infof("taskx: event[%s] recovery processing %d in-flight messages", c.runner.GetName(), c.option.ConsumerCount)
 
 	// 等待结束后，将 processing 中残留消息视为可恢复消息并分批移回 pending。
 	// EventQueue 的 processing 使用 List，无法按单条消息进入 processing 的时间过滤；
