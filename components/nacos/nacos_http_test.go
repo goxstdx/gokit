@@ -1,6 +1,12 @@
 package nacos
 
 import (
+	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -117,6 +123,95 @@ func TestNacosHTTPListenConfigHotUpdateByPolling(t *testing.T) {
 		case <-timeout:
 			t.Fatalf("timeout waiting hot update callback, latest=%q", latest)
 		}
+	}
+}
+
+func TestNacosHTTPGetConfigSpecifiedMissingFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("dataId") == "not-exist.yaml" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("config data not exist"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	conf := mockConfFromServer(t, server.URL)
+	client, err := NewNacosHTTP(conf)
+	if err != nil {
+		t.Fatalf("NewNacosHTTP returned error: %v", err)
+	}
+
+	_, err = client.GetConfig("not-exist.yaml", "DEFAULT_GROUP")
+	if err == nil {
+		t.Fatal("expected error for missing config file")
+	}
+
+	var nacosErr *NacosError
+	if !errors.As(err, &nacosErr) {
+		t.Fatalf("expected NacosError, got %T: %v", err, err)
+	}
+	if nacosErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", nacosErr.StatusCode)
+	}
+}
+
+func TestNacosHTTPListenConfigWithTargetSpecifiedMissingFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("dataId") == "not-exist.yaml" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("config data not exist"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	conf := mockConfFromServer(t, server.URL)
+	client, err := NewNacosHTTP(conf)
+	if err != nil {
+		t.Fatalf("NewNacosHTTP returned error: %v", err)
+	}
+
+	err = client.ListenConfigWithTarget("not-exist.yaml", "DEFAULT_GROUP", nil, nil)
+	if err == nil {
+		t.Fatal("expected ListenConfigWithTarget to fail for missing config file")
+	}
+}
+
+func mockConfFromServer(t *testing.T, serverURL string) Conf {
+	t.Helper()
+
+	parsed, err := url.Parse(serverURL)
+	if err != nil {
+		t.Fatalf("parse server url failed: %v", err)
+	}
+	host, portStr, err := net.SplitHostPort(parsed.Host)
+	if err != nil {
+		t.Fatalf("parse host:port failed: %v", err)
+	}
+	port, err := strconv.ParseUint(portStr, 10, 64)
+	if err != nil {
+		t.Fatalf("parse port failed: %v", err)
+	}
+
+	return Conf{
+		Scheme: Scheme(parsed.Scheme),
+		Ipaddr: host,
+		Port:   port,
+		File: &ConfigFileConf{
+			DataId: "exist.yaml",
+			Group:  "DEFAULT_GROUP",
+		},
+		Auth: &AuthConf{
+			Mode: AuthModeDisabled,
+		},
+		Retry: &RetryConf{
+			MaxRetries: 0,
+		},
 	}
 }
 
