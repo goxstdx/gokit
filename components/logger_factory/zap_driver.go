@@ -31,7 +31,7 @@ func newZapLogger(cfg Config, w io.Writer) (*zapLogger, error) {
 		LineEnding:     zapcore.DefaultLineEnding,
 		EncodeLevel:    zapcore.LowercaseLevelEncoder,
 		EncodeDuration: zapcore.StringDurationEncoder,
-		EncodeCaller:   zapcore.ShortCallerEncoder,
+		EncodeCaller:   zapcore.FullCallerEncoder,
 		EncodeTime: func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
 			enc.AppendString(t.Format(cfg.TimeFormat))
 		},
