@@ -31,15 +31,19 @@ func (e *NacosError) Error() string {
 }
 
 type NacosHTTP struct {
-	conf   Conf
-	client *http.Client
+	conf          Conf
+	client        *http.Client
+	listenHandles map[string]*listenHandle
 
-	mu           sync.Mutex
-	listenCancel context.CancelFunc
+	mu sync.Mutex
 
 	tokenMu      sync.Mutex
 	cachedToken  string
 	tokenExpires time.Time
+}
+
+type listenHandle struct {
+	cancel context.CancelFunc
 }
 
 type nacosLoginResponse struct {
@@ -59,6 +63,7 @@ func NewNacosHTTP(conf Conf) (*NacosHTTP, error) {
 		client: &http.Client{
 			Timeout: time.Duration(conf.TimeoutMs) * time.Millisecond,
 		},
+		listenHandles: make(map[string]*listenHandle),
 	}, nil
 }
 
@@ -72,79 +77,111 @@ func (n *NacosHTTP) GetDefaultConfigWithContext(ctx context.Context) (string, er
 	if err := n.conf.ValidateWithDataId(); err != nil {
 		return "", err
 	}
+
 	return n.getConfigWithRetry(ctx, n.defaultFile())
 }
 
 // GetConfig fetches configuration for the specified dataId and group.
-func (n *NacosHTTP) GetConfig(dataId, group string) (string, error) {
-	return n.GetConfigWithContext(context.Background(), dataId, group)
+func (n *NacosHTTP) GetConfig(fileConf ConfigFile) (string, error) {
+	return n.GetConfigWithContext(context.Background(), fileConf)
 }
 
 // GetConfigWithContext is like GetConfig but accepts a context.
-func (n *NacosHTTP) GetConfigWithContext(ctx context.Context, dataId, group string) (string, error) {
-	if dataId == "" {
-		return "", fmt.Errorf("nacos: dataId must not be empty")
+func (n *NacosHTTP) GetConfigWithContext(ctx context.Context, fileConf ConfigFile) (string, error) {
+	if err := fileConf.Validate(); err != nil {
+		return "", err
 	}
-	if group == "" {
-		return "", fmt.Errorf("nacos: group must not be empty")
-	}
-	return n.getConfigWithRetry(ctx, n.configFileWith(dataId, group))
+
+	return n.getConfigWithRetry(ctx, fileConf)
 }
 
 // ListenConfig starts polling for configuration changes using Conf.File.
-func (n *NacosHTTP) ListenConfig(fn func(dataId, data string), onErr func(err error)) error {
-	file := n.defaultFile()
-	return n.ListenConfigWithTarget(file.DataId, file.Group, fn, onErr)
+func (n *NacosHTTP) ListenConfig(conf ListenConfig) error {
+	return n.ListenConfigWithTarget(conf)
 }
 
 // ListenConfigWithTarget starts polling for configuration changes for the specified dataId and group.
-func (n *NacosHTTP) ListenConfigWithTarget(dataId, group string, fn func(dataId, data string), onErr func(err error)) error {
-	if dataId == "" || group == "" {
-		return fmt.Errorf("nacos: dataId and group must not be empty")
-	}
-	file := n.configFileWith(dataId, group)
-
-	n.mu.Lock()
-	if n.listenCancel != nil {
-		n.listenCancel()
-		n.listenCancel = nil
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	n.listenCancel = cancel
-	n.mu.Unlock()
-
-	lastData, err := n.getConfigWithRetry(ctx, file)
-	if err != nil {
-		n.mu.Lock()
-		n.listenCancel = nil
-		n.mu.Unlock()
-		cancel()
+func (n *NacosHTTP) ListenConfigWithTarget(conf ListenConfig) error {
+	if err := conf.File.Validate(); err != nil {
 		return err
 	}
 
-	go n.listenLoop(ctx, file, hashContent(lastData), fn, onErr)
+	ctx, cancel := context.WithCancel(context.Background())
+	handle := &listenHandle{cancel: cancel}
+	key := conf.File.Key()
+
+	n.mu.Lock()
+	if old, exists := n.listenHandles[key]; exists {
+		old.cancel()
+	}
+	n.listenHandles[key] = handle
+	n.mu.Unlock()
+
+	lastData, err := n.getConfigWithRetry(ctx, conf.File)
+	if err != nil {
+		cancel()
+		n.mu.Lock()
+		if current, exists := n.listenHandles[key]; exists && current == handle {
+			delete(n.listenHandles, key)
+		}
+		n.mu.Unlock()
+		return err
+	}
+
+	go n.listenLoop(ctx, key, handle, conf.File, hashContent(lastData), conf.OnChange, conf.OnErr)
+
 	return nil
 }
 
-// StopListenConfig stops the active listen loop.
+// StopListenConfig stops all active listen loops.
 func (n *NacosHTTP) StopListenConfig() {
 	n.mu.Lock()
-	defer n.mu.Unlock()
-	if n.listenCancel != nil {
-		n.listenCancel()
-		n.listenCancel = nil
+	handles := make([]*listenHandle, 0, len(n.listenHandles))
+	for key, handle := range n.listenHandles {
+		handles = append(handles, handle)
+		delete(n.listenHandles, key)
+	}
+	n.mu.Unlock()
+
+	for _, handle := range handles {
+		handle.cancel()
+	}
+}
+
+// StopListenConfigWithTarget stops the active listen loop for the specified target file.
+func (n *NacosHTTP) StopListenConfigWithTarget(file ConfigFile) {
+	key := file.Key()
+
+	n.mu.Lock()
+	handle, exists := n.listenHandles[key]
+	if exists {
+		delete(n.listenHandles, key)
+	}
+	n.mu.Unlock()
+
+	if exists {
+		handle.cancel()
 	}
 }
 
 func (n *NacosHTTP) listenLoop(
 	ctx context.Context,
-	file ConfigFileConf,
+	key string,
+	handle *listenHandle,
+	file ConfigFile,
 	lastHash string,
-	fn func(dataId, data string),
+	fn func(fileConf ConfigFile, data string),
 	onErr func(err error),
 ) {
 	ticker := time.NewTicker(n.pollInterval())
-	defer ticker.Stop()
+	defer func() {
+		ticker.Stop()
+		n.mu.Lock()
+		if current, exists := n.listenHandles[key]; exists && current == handle {
+			delete(n.listenHandles, key)
+		}
+		n.mu.Unlock()
+	}()
 
 	for {
 		select {
@@ -166,13 +203,18 @@ func (n *NacosHTTP) listenLoop(
 			}
 
 			lastHash = currentHash
-			n.safeCallback(fn, file.DataId, current, onErr)
+			n.safeCallback(fn, file, current, onErr)
 		}
 	}
 }
 
 // safeCallback invokes fn with panic recovery; any panic is reported via onErr.
-func (n *NacosHTTP) safeCallback(fn func(dataId, data string), dataId, data string, onErr func(err error)) {
+func (n *NacosHTTP) safeCallback(
+	fn func(fileConf ConfigFile, data string),
+	fileConf ConfigFile,
+	data string,
+	onErr func(err error),
+) {
 	if fn == nil {
 		return
 	}
@@ -181,11 +223,11 @@ func (n *NacosHTTP) safeCallback(fn func(dataId, data string), dataId, data stri
 			n.reportErr(onErr, fmt.Errorf("nacos: callback panicked: %v", r))
 		}
 	}()
-	fn(dataId, data)
+	fn(fileConf, data)
 }
 
 // getConfigWithRetry wraps getConfig with retry and 401-token-refresh logic.
-func (n *NacosHTTP) getConfigWithRetry(ctx context.Context, file ConfigFileConf) (string, error) {
+func (n *NacosHTTP) getConfigWithRetry(ctx context.Context, file ConfigFile) (string, error) {
 	var lastErr error
 
 	for attempt := 0; attempt <= n.conf.Retry.MaxRetries; attempt++ {
@@ -208,7 +250,11 @@ func (n *NacosHTTP) getConfigWithRetry(ctx context.Context, file ConfigFileConf)
 				return "", fmt.Errorf("nacos: received 401 while auth mode is disabled: %w", err)
 			}
 			if !n.hasAuthCredentials() {
-				return "", fmt.Errorf("nacos: received 401 but auth credentials are not configured (mode=%s): %w", n.conf.Auth.Mode, err)
+				return "", fmt.Errorf(
+					"nacos: received 401 but auth credentials are not configured (mode=%s): %w",
+					n.conf.Auth.Mode,
+					err,
+				)
 			}
 			n.invalidateToken()
 			continue
@@ -222,7 +268,7 @@ func (n *NacosHTTP) getConfigWithRetry(ctx context.Context, file ConfigFileConf)
 	return "", fmt.Errorf("nacos: all %d attempts failed: %w", n.conf.Retry.MaxRetries+1, lastErr)
 }
 
-func (n *NacosHTTP) getConfig(ctx context.Context, file ConfigFileConf) (string, error) {
+func (n *NacosHTTP) getConfig(ctx context.Context, file ConfigFile) (string, error) {
 	token, err := n.fetchToken(ctx)
 	if err != nil {
 		return "", err
@@ -346,14 +392,15 @@ func (n *NacosHTTP) authCredentials() (string, string) {
 	return n.conf.Auth.UserName, n.conf.Auth.Password
 }
 
-func (n *NacosHTTP) defaultFile() ConfigFileConf {
+func (n *NacosHTTP) defaultFile() ConfigFile {
 	if n.conf.File == nil {
-		return ConfigFileConf{}
+		return ConfigFile{}
 	}
+
 	return *n.conf.File
 }
 
-func (n *NacosHTTP) configFileWith(dataId, group string) ConfigFileConf {
+func (n *NacosHTTP) configFileWith(dataId, group string) ConfigFile {
 	file := n.defaultFile()
 	file.DataId = dataId
 	file.Group = group

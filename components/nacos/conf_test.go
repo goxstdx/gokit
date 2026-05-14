@@ -18,9 +18,7 @@ func TestConfValidateApplyDefaults(t *testing.T) {
 	if conf.File == nil {
 		t.Fatal("expected File to be initialized")
 	}
-	if conf.File.Group != DefaultGroup {
-		t.Fatalf("expected default group %q, got %q", DefaultGroup, conf.File.Group)
-	}
+
 	if conf.Auth == nil {
 		t.Fatal("expected Auth to be initialized")
 	}
@@ -76,7 +74,7 @@ func TestConfValidateWithDataIdRequiresFileTarget(t *testing.T) {
 	conf := Conf{
 		Ipaddr: "127.0.0.1",
 		Port:   8848,
-		File: &ConfigFileConf{
+		File: &ConfigFile{
 			Group: "G1",
 		},
 	}

@@ -49,11 +49,29 @@ type AuthConf struct {
 	Password string
 }
 
-// ConfigFileConf controls the target nacos config file info.
-type ConfigFileConf struct {
+// ConfigFile controls the target nacos config file info.
+type ConfigFile struct {
 	NamespaceId string
 	DataId      string
 	Group       string
+}
+
+func (c ConfigFile) Key() string {
+	return fmt.Sprintf("%s-%s-%s", c.NamespaceId, c.DataId, c.Group)
+}
+
+func (c ConfigFile) Validate() error {
+	if c.NamespaceId == "" {
+		return fmt.Errorf("nacos: NamespaceId must not be empty")
+	}
+	if c.DataId == "" {
+		return fmt.Errorf("nacos: dataId must not be empty")
+	}
+	if c.Group == "" {
+		return fmt.Errorf("nacos: group must not be empty")
+	}
+
+	return nil
 }
 
 // Conf holds all configuration for a NacosHTTP client.
@@ -61,7 +79,7 @@ type Conf struct {
 	Scheme Scheme
 	Ipaddr string
 	Port   uint64
-	File   *ConfigFileConf
+	File   *ConfigFile
 
 	Auth      *AuthConf
 	TimeoutMs uint64
@@ -82,18 +100,16 @@ func (c *Conf) applyDefaults() {
 			Interval:   DefaultRetryInterval,
 		}
 	}
-	if c.File == nil {
-		c.File = &ConfigFileConf{}
-	}
 	if c.Auth == nil {
 		c.Auth = &AuthConf{}
 	}
 	if c.Scheme == "" {
 		c.Scheme = DefaultScheme
 	}
-	if c.File.Group == "" {
-		c.File.Group = string(DefaultGroup)
+	if c.File == nil {
+		c.File = &ConfigFile{}
 	}
+
 	if c.Auth.Mode == "" {
 		c.Auth.Mode = DefaultAuthMode
 	}
@@ -116,7 +132,13 @@ func (c *Conf) Validate() error {
 		return fmt.Errorf("nacos: Scheme must be %q or %q, got %q", SchemeHTTP, SchemeHTTPS, c.Scheme)
 	}
 	if c.Auth.Mode != AuthModeAuto && c.Auth.Mode != AuthModeRequired && c.Auth.Mode != AuthModeDisabled {
-		return fmt.Errorf("nacos: Auth.Mode must be %q, %q or %q, got %q", AuthModeAuto, AuthModeRequired, AuthModeDisabled, c.Auth.Mode)
+		return fmt.Errorf(
+			"nacos: Auth.Mode must be %q, %q or %q, got %q",
+			AuthModeAuto,
+			AuthModeRequired,
+			AuthModeDisabled,
+			c.Auth.Mode,
+		)
 	}
 	if c.Ipaddr == "" {
 		return fmt.Errorf("nacos: Ipaddr is required")
@@ -133,25 +155,27 @@ func (c *Conf) Validate() error {
 	if c.Auth.Mode == AuthModeDisabled && (c.Auth.UserName != "" || c.Auth.Password != "") {
 		return fmt.Errorf("nacos: Auth.UserName/Auth.Password must be empty when Auth.Mode is %q", AuthModeDisabled)
 	}
-	if c.File == nil {
-		return fmt.Errorf("nacos: File is required")
-	}
 	if c.Retry.MaxRetries < 0 {
 		return fmt.Errorf("nacos: Retry.MaxRetries must be >= 0")
 	}
+
 	return nil
 }
 
-// ValidateWithDataId extends Validate to also require File.DataId and File.Group.
+// ValidateWithDataId extends Validate to also File.Validate
 func (c *Conf) ValidateWithDataId() error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
-	if c.File.DataId == "" {
-		return fmt.Errorf("nacos: File.DataId is required")
+	if err := c.File.Validate(); err != nil {
+		return err
 	}
-	if c.File.Group == "" {
-		return fmt.Errorf("nacos: File.Group is required")
-	}
+
 	return nil
+}
+
+type ListenConfig struct {
+	File     ConfigFile
+	OnChange func(File ConfigFile, content string)
+	OnErr    func(err error)
 }
