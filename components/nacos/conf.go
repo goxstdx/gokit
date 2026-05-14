@@ -22,7 +22,6 @@ const (
 
 const (
 	DefaultScheme        = SchemeHTTP
-	DefaultGroup         = "DEFAULT_GROUP"
 	DefaultAuthMode      = AuthModeAuto
 	DefaultTimeoutMs     = 3000
 	DefaultPollInterval  = 5 * time.Second
