@@ -173,6 +173,6 @@ func (c *Conf) ValidateWithDataId() error {
 
 type ListenConfig struct {
 	File     ConfigFile
-	OnChange func(File ConfigFile, content string)
+	OnChange func(file ConfigFile, content string)
 	OnErr    func(err error)
 }
