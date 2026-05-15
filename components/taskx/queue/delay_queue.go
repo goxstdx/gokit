@@ -26,7 +26,6 @@ type DelayConsumer struct {
 	traceKey            string
 	lockTTL             time.Duration
 	pollInterval        time.Duration
-	procTimeout         time.Duration
 	recoveryGracePeriod time.Duration
 	internalOpTimeout   time.Duration
 	retryBaseInterval   time.Duration
@@ -46,7 +45,6 @@ func NewDelayConsumer(runner core.QueueRunner, opt core.RunnerOption, cfg DelayC
 		keys:                cfg.Keys,
 		lockTTL:             cfg.LockTTL,
 		pollInterval:        cfg.PollInterval,
-		procTimeout:         cfg.ProcTimeout,
 		recoveryGracePeriod: cfg.RecoveryGracePeriod,
 		internalOpTimeout:   cfg.InternalOpTimeout,
 		retryBaseInterval:   cfg.RetryBaseInterval,
@@ -202,6 +200,7 @@ func (c *DelayConsumer) periodicRecover(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			c.logger.Infof("taskx: delay[%s] periodicRecover exiting, ctx cancelled: %v", c.runner.GetName(), ctx.Err())
 			return
 		case <-ticker.C:
 			c.doRecover(ctx, "periodic")
@@ -340,12 +339,17 @@ func (c *DelayConsumer) startRecoverRenewLoop(lockKey string, lockTTL time.Durat
 func (c *DelayConsumer) poll(ctx context.Context) {
 	defer c.wg.Done()
 
+	// 启动后立即拉取一次，避免首次等待完整 pollInterval
+	c.beat()
+	c.fetch(ctx)
+
 	ticker := time.NewTicker(c.pollInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
+			c.logger.Infof("taskx: delay[%s] poll loop exiting, ctx cancelled: %v", c.runner.GetName(), ctx.Err())
 			return
 		case <-ticker.C:
 			c.beat()
@@ -386,7 +390,7 @@ func (c *DelayConsumer) fetch(ctx context.Context) {
 		batchSize = 10
 	}
 
-	c.logger.Infof(
+	c.logger.Debugf(
 		"taskx: delay[%s] fetch pending items, now: %d, batch size: %d, pending key: %s, processing key: %s",
 		c.runner.GetName(),
 		now,
@@ -397,6 +401,7 @@ func (c *DelayConsumer) fetch(ctx context.Context) {
 	items, err := c.driver.TransferToProcessing(ctx, c.keys.Pending, c.keys.Processing, now, batchSize)
 	if err != nil {
 		if ctx.Err() != nil {
+			c.logger.Infof("taskx: delay[%s] transfer interrupted, ctx cancelled: %v", c.runner.GetName(), ctx.Err())
 			return
 		}
 		c.logger.Errorf("taskx: delay[%s] transfer error: %v", c.runner.GetName(), err)
@@ -406,6 +411,7 @@ func (c *DelayConsumer) fetch(ctx context.Context) {
 	for _, raw := range items {
 		select {
 		case <-ctx.Done():
+			c.logger.Infof("taskx: delay[%s] fetch dispatch interrupted, ctx cancelled: %v, remaining items: %d", c.runner.GetName(), ctx.Err(), len(items))
 			return
 		case c.taskCh <- raw:
 		}
@@ -418,6 +424,7 @@ func (c *DelayConsumer) work(ctx context.Context, id int) {
 	for {
 		select {
 		case <-ctx.Done():
+			c.logger.Infof("taskx: delay[%s][%d] worker exiting, ctx cancelled: %v", c.runner.GetName(), id, ctx.Err())
 			return
 		case raw, ok := <-c.taskCh:
 			if !ok {
@@ -468,12 +475,12 @@ func (c *DelayConsumer) process(ctx context.Context, raw string, id int) {
 	c.logger.Warnf("taskx: delay[%s][%d] run failed: %v", c.runner.GetName(), id, result.Err)
 	env.RetryCount++
 
-	if env.RetryCount > *c.option.MaxRetry {
+	if env.RetryCount > c.option.MaxRetry {
 		c.logger.Warnf(
 			"taskx: delay[%s][%d] max retry reached (%d), moving to dead letter",
 			c.runner.GetName(),
 			id,
-			*c.option.MaxRetry,
+			c.option.MaxRetry,
 		)
 		c.alert(
 			core.AlertData{

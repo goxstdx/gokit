@@ -35,6 +35,11 @@ const (
 	AlertEventNextTimeIgnored   = core.AlertEventNextTimeIgnored
 	AlertTimerAllAttemptsFailed = core.AlertTimerAllAttemptsFailed
 	AlertUnknownRunner          = core.AlertUnknownRunner
+	AlertRecoveryLockLost       = core.AlertRecoveryLockLost
+	AlertRecoveryExceeded       = core.AlertRecoveryExceeded
+	AlertQueueBacklog           = core.AlertQueueBacklog
+	AlertPublishUnregistered    = core.AlertPublishUnregistered
+	AlertListenerUnhealthy      = core.AlertListenerUnhealthy
 )
 
 var NewEnvelope = core.NewEnvelope

@@ -201,7 +201,7 @@ func TestEventQueueFlow(t *testing.T) {
 	)
 
 	reg := taskx.NewRegistry()
-	if err := reg.RegisterEventRunner(runner, core.RunnerOption{MaxRetry: core.IntPtr(2), ConsumerCount: 1}); err != nil {
+	if err := reg.RegisterEventRunner(runner, core.RunnerOption{MaxRetry: 2, ConsumerCount: 1}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -209,7 +209,6 @@ func TestEventQueueFlow(t *testing.T) {
 		rdb, reg,
 		taskx.WithKeyPrefix(prefix),
 		taskx.WithLogger(log),
-		taskx.WithProcessingTimeout(time.Minute),
 	)
 
 	if err := mgr.Start(ctx); err != nil {
@@ -281,7 +280,7 @@ func TestDelayQueueFlow(t *testing.T) {
 	)
 
 	reg := taskx.NewRegistry()
-	if err := reg.RegisterDelayRunner(runner, core.RunnerOption{MaxRetry: core.IntPtr(2), ConsumerCount: 2}); err != nil {
+	if err := reg.RegisterDelayRunner(runner, core.RunnerOption{MaxRetry: 2, ConsumerCount: 2}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -595,7 +594,7 @@ func TestGracefulShutdown(t *testing.T) {
 	)
 
 	reg := taskx.NewRegistry()
-	if err := reg.RegisterEventRunner(runner, core.RunnerOption{MaxRetry: core.IntPtr(1), ConsumerCount: 2}); err != nil {
+	if err := reg.RegisterEventRunner(runner, core.RunnerOption{MaxRetry: 1, ConsumerCount: 2}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -791,7 +790,7 @@ func TestDeadLetterRecovery(t *testing.T) {
 	)
 
 	reg := taskx.NewRegistry()
-	if err := reg.RegisterEventRunner(runner, core.RunnerOption{MaxRetry: core.IntPtr(2), ConsumerCount: 1}); err != nil {
+	if err := reg.RegisterEventRunner(runner, core.RunnerOption{MaxRetry: 2, ConsumerCount: 1}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1089,7 +1088,7 @@ func TestEventNextTimeAlertAndNoRetry(t *testing.T) {
 	)
 
 	reg := taskx.NewRegistry()
-	if err := reg.RegisterEventRunner(runner, core.RunnerOption{MaxRetry: core.IntPtr(3), ConsumerCount: 1}); err != nil {
+	if err := reg.RegisterEventRunner(runner, core.RunnerOption{MaxRetry: 3, ConsumerCount: 1}); err != nil {
 		t.Fatal(err)
 	}
 

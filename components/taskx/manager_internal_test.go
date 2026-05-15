@@ -74,12 +74,12 @@ func (internalEventDriver) RecoverProcessing(context.Context, string, string, ti
 }
 func (internalEventDriver) Len(context.Context, string) (int64, error) { return 0, nil }
 
-type eventPopTimeoutDriver struct {
+type eventPollIntervalDriver struct {
 	internalEventDriver
 	timeoutCh chan time.Duration
 }
 
-func (d *eventPopTimeoutDriver) PopToProcessing(_ context.Context, _, _ string, timeout time.Duration) (string, error) {
+func (d *eventPollIntervalDriver) PopToProcessing(_ context.Context, _, _ string, timeout time.Duration) (string, error) {
 	select {
 	case d.timeoutCh <- timeout:
 	default:
@@ -437,18 +437,18 @@ func TestPublishDelayAllowsImmediateExecuteAt(t *testing.T) {
 	}
 }
 
-func TestEventPopTimeoutConfigIsPassedToConsumer(t *testing.T) {
+func TestEventPollIntervalConfigIsPassedToConsumer(t *testing.T) {
 	reg := NewRegistry()
 	if err := reg.RegisterEventRunner(internalQueueRunner{name: "event-pop-timeout"}); err != nil {
 		t.Fatal(err)
 	}
-	drv := &eventPopTimeoutDriver{timeoutCh: make(chan time.Duration, 1)}
+	drv := &eventPollIntervalDriver{timeoutCh: make(chan time.Duration, 1)}
 	mgr := NewManager(
 		reg,
 		WithLogger(newInternalTestLogger(t)),
 		WithLockDriver(internalLockDriver{}),
 		WithEventQueueDriver(drv),
-		WithEventPopTimeout(75*time.Millisecond),
+		WithEventPollInterval(75*time.Millisecond),
 	)
 	mgr.SetEventConsumerFactory(newEventConsumerFactory)
 	if err := mgr.Start(context.Background()); err != nil {
@@ -469,7 +469,7 @@ func TestEventPopTimeoutConfigIsPassedToConsumer(t *testing.T) {
 func TestDelayRetryBaseIntervalConfigControlsFallbackSchedule(t *testing.T) {
 	reg := NewRegistry()
 	runner := failingQueueRunner{name: "delay-retry-base"}
-	if err := reg.RegisterDelayRunner(runner, core.RunnerOption{MaxRetry: core.IntPtr(1), ConsumerCount: 1}); err != nil {
+	if err := reg.RegisterDelayRunner(runner, core.RunnerOption{MaxRetry: 1, ConsumerCount: 1}); err != nil {
 		t.Fatal(err)
 	}
 	drv := &delayRetryDriver{retryAtCh: make(chan int64, 1)}

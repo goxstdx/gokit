@@ -8,7 +8,6 @@ import (
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 	redisx "gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/provider/redis"
 )
 
@@ -30,8 +29,8 @@ func AllOptionsExample(ctx context.Context, rdb redis.Cmdable) error {
 	// 注册 EventRunner：示例消费并发=2，最大重试次数=5。
 	_ = registry.RegisterEventRunner(
 		&OrderNotifyRunner{},
-		core.RunnerOption{
-			MaxRetry:      core.IntPtr(5),
+		taskx.RunnerOption{
+			MaxRetry:      5,
 			ConsumerCount: 2,
 		},
 	)
@@ -39,8 +38,8 @@ func AllOptionsExample(ctx context.Context, rdb redis.Cmdable) error {
 	// 注册 DelayRunner：示例消费并发=2，最大重试次数=3。
 	_ = registry.RegisterDelayRunner(
 		&OrderNotifyRunner{},
-		core.RunnerOption{
-			MaxRetry:      core.IntPtr(3),
+		taskx.RunnerOption{
+			MaxRetry:      3,
 			ConsumerCount: 2,
 		},
 	)
@@ -48,9 +47,9 @@ func AllOptionsExample(ctx context.Context, rdb redis.Cmdable) error {
 	// 注册 TimerTask：显式使用 single_per_tick 作为单任务并发策略。
 	_ = registry.RegisterTimerTask(
 		&ReportTimerTask{},
-		core.TimerTaskOption{
-			MaxRetry:          core.IntPtr(1),
-			ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencySinglePerTick),
+		taskx.TimerTaskOption{
+			MaxRetry:          taskx.IntPtr(1),
+			ConcurrencyPolicy: taskx.TimerConcurrencyPolicyPtr(taskx.TimerConcurrencySinglePerTick),
 		},
 	)
 
@@ -72,8 +71,8 @@ func AllOptionsExample(ctx context.Context, rdb redis.Cmdable) error {
 		taskx.WithKeyPrefix("myapp-taskx-all-options"),
 		// WithPollInterval：DelayQueue 拉取到期任务的轮询间隔。
 		taskx.WithPollInterval(500*time.Millisecond),
-		// WithEventPopTimeout：EventQueue 每次 PopToProcessing 的阻塞等待时长。
-		taskx.WithEventPopTimeout(2*time.Second),
+		// WithEventPollInterval：EventQueue 消费者轮询间隔（从 pending 拉取消息的频率）。
+		taskx.WithEventPollInterval(2*time.Second),
 		// WithDelayRetryBaseInterval：DelayQueue 未显式返回 NextTime 时的线性重试基准间隔。
 		taskx.WithDelayRetryBaseInterval(3*time.Second),
 		// WithLockTTL：分布式锁 TTL（timer 运行锁、启动恢复锁都使用该基线）。
@@ -82,24 +81,22 @@ func AllOptionsExample(ctx context.Context, rdb redis.Cmdable) error {
 		taskx.WithInternalOpTimeout(5*time.Second),
 		// WithTimerHeartbeatInterval：Timer 监听器心跳上报周期。
 		taskx.WithTimerHeartbeatInterval(2*time.Second),
-		// WithProcessingTimeout：processing 中消息的超时阈值（用于启动恢复判断）。
-		taskx.WithProcessingTimeout(4*time.Minute),
 		// WithRecoverBatchSize：启动恢复时每批次处理消息数量（传递给 Redis provider）。
 		taskx.WithRecoverBatchSize(500),
 		// WithRecoveryGracePeriod：processing 中停留超过该时间的消息视为孤儿并恢复到 pending（默认 30s）。
 		taskx.WithRecoveryGracePeriod(30*time.Second),
 		// WithDefaultTimerTaskOption：全局 TimerTask 默认配置（单任务可覆盖）。
 		taskx.WithDefaultTimerTaskOption(
-			core.TimerTaskOption{
-				MaxRetry:          core.IntPtr(0),
-				ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencyForbidOverlap),
+			taskx.TimerTaskOption{
+				MaxRetry:          taskx.IntPtr(0),
+				ConcurrencyPolicy: taskx.TimerConcurrencyPolicyPtr(taskx.TimerConcurrencyForbidOverlap),
 			},
 		),
 		// WithLogger：必填日志器，Manager.Start() 会校验。
 		taskx.WithLogger(log),
 		// WithAlertFunc：异常告警回调（内部异步调用，不阻塞消费主流程）。
 		taskx.WithAlertFunc(
-			func(data core.AlertData) {
+			func(data taskx.AlertData) {
 				log.Warnf(
 					"taskx alert: source=%s type=%s runner=%s err=%v",
 					data.Source, data.AlertType, data.RunnerName, data.RunnerResult.Err,

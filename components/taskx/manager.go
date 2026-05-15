@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
@@ -47,10 +48,12 @@ type Manager struct {
 	delayFactory DelayConsumerFactory
 	timerFactory TimerSchedulerFactory
 
-	mu        sync.Mutex
-	consumers []consumer
-	scheduler timerScheduler
-	running   bool
+	mu              sync.Mutex
+	consumers       []consumer
+	scheduler       timerScheduler
+	running         bool
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
 
 	monitorCancel context.CancelFunc
 	monitorWG     sync.WaitGroup
@@ -59,11 +62,12 @@ type Manager struct {
 	alertQueue    chan core.AlertData
 	alertHandler  core.AlertFunc
 
-	healthMu       sync.RWMutex
-	eventBeatAt    map[string]time.Time
-	delayBeatAt    map[string]time.Time
-	timerBeatAt    time.Time
-	healthSnapshot ManagerHealthSnapshot
+	healthMu         sync.RWMutex
+	eventBeatAt      map[string]time.Time
+	delayBeatAt      map[string]time.Time
+	timerBeatAt      time.Time
+	healthSnapshot   ManagerHealthSnapshot
+	healthFailCounts map[string]int // key = "event:{group}" / "delay:{name}" / "timer", value = 连续失败次数
 }
 
 // QueueListenerHealth 队列监听健康信息
@@ -106,10 +110,11 @@ func NewManager(registry *Registry, opts ...Option) *Manager {
 	}
 
 	return &Manager{
-		cfg:         cfg,
-		registry:    registry,
-		eventBeatAt: make(map[string]time.Time),
-		delayBeatAt: make(map[string]time.Time),
+		cfg:              cfg,
+		registry:         registry,
+		eventBeatAt:      make(map[string]time.Time),
+		delayBeatAt:      make(map[string]time.Time),
+		healthFailCounts: make(map[string]int),
 	}
 }
 
@@ -140,6 +145,11 @@ func (m *Manager) Start(ctx context.Context) error {
 		return err
 	}
 
+	// 分离启动 context 和生命周期 context：
+	// ctx 仅用于 Start 内的同步初始化操作（版本检测等），带调用方超时控制；
+	// lifecycleCtx 由 Manager 内部管理，传给消费协程，仅在 Stop() 时取消。
+	m.lifecycleCtx, m.lifecycleCancel = context.WithCancel(context.Background())
+
 	m.startAlertDispatcherLocked()
 	startSucceeded := false
 	defer func() {
@@ -167,13 +177,13 @@ func (m *Manager) Start(ctx context.Context) error {
 			ecfg := queue.EventConsumerConfig{
 				ConsumerConfig: baseCfg,
 				Driver:         m.cfg.EventDriver,
-				PopTimeout:     m.cfg.EventPopTimeout,
+				PopTimeout:     m.cfg.EventPollInterval,
 				Keys:           queue.NewQueueKeySet(m.cfg.KeyPrefix, "event", groupName),
 				Runners:        runners,
 				ConsumerCount:  maxConsumer,
 			}
 			c := m.eventFactory(ecfg)
-			if err := c.Start(ctx); err != nil {
+			if err = c.Start(m.lifecycleCtx); err != nil {
 				return fmt.Errorf("taskx: start event group[%s]: %w", groupName, err)
 			}
 			m.consumers = append(m.consumers, c)
@@ -192,7 +202,7 @@ func (m *Manager) Start(ctx context.Context) error {
 				Keys:              queue.NewQueueKeySet(m.cfg.KeyPrefix, "delay", entry.Runner.GetName()),
 			}
 			c := m.delayFactory(entry.Runner, entry.Option, dcfg)
-			if err := c.Start(ctx); err != nil {
+			if err := c.Start(m.lifecycleCtx); err != nil {
 				return fmt.Errorf("taskx: start delay[%s]: %w", entry.Runner.GetName(), err)
 			}
 			m.consumers = append(m.consumers, c)
@@ -269,14 +279,21 @@ func (m *Manager) Stop(ctx context.Context) error {
 		m.scheduler = nil
 	}
 
-	// 3) 逐个停止 queue consumer（内部会完成 drain/recover 兜底逻辑）。
+	// 3) 取消消费协程的生命周期 context，通知所有消费协程退出。
+	if m.lifecycleCancel != nil {
+		m.lifecycleCancel()
+		m.lifecycleCancel = nil
+		m.cfg.Logger.Infof("taskx: lifecycle context cancelled, waiting consumers to exit")
+	}
+
+	// 4) 逐个停止 queue consumer（内部会完成 drain/recover 兜底逻辑）。
 	if err := m.stopConsumersWithContextLocked(ctx); err != nil {
 		m.cfg.Logger.Errorf("taskx: manager stop failed while stopping consumers: %v", err)
 		return err
 	}
 	m.cfg.Logger.Infof("taskx: all consumers stopped")
 
-	// 4) 停告警分发协程并 drain 剩余告警（写日志后丢弃，不再分发给外部告警回调）。
+	// 5) 停告警分发协程并 drain 剩余告警（写日志后丢弃，不再分发给外部告警回调）。
 	if err := m.stopAlertDispatcherWithContextLocked(ctx); err != nil {
 		m.cfg.Logger.Errorf("taskx: manager stop failed while stopping alert dispatcher: %v", err)
 		return err
@@ -359,6 +376,10 @@ func (m *Manager) stopConsumersLocked() {
 }
 
 func (m *Manager) cleanupStartFailureLocked() {
+	if m.lifecycleCancel != nil {
+		m.lifecycleCancel()
+		m.lifecycleCancel = nil
+	}
 	if m.scheduler != nil {
 		stopCtx := m.scheduler.Stop()
 		<-stopCtx.Done()
@@ -399,6 +420,7 @@ func (m *Manager) recordHeartbeat(hb core.ListenerHeartbeat) {
 	}
 }
 
+// startMonitorLocked starts the health monitoring routine
 func (m *Manager) startMonitorLocked() {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.monitorCancel = cancel
@@ -413,11 +435,21 @@ func (m *Manager) startMonitorLocked() {
 				return
 			case <-ticker.C:
 				m.refreshHealthSnapshot(ctx, true)
+
+				m.HealthSnapshot()
+				m.cfg.Logger.WithFields(
+					logger_factory.Fields{
+						logger_factory.String("event", fmt.Sprintf("%+v", m.eventBeatAt)),
+						logger_factory.String("delay", fmt.Sprintf("%+v", m.delayBeatAt)),
+						logger_factory.String("timer", fmt.Sprintf("%+v", m.timerBeatAt)),
+					},
+				).Infof("taskx: manager health snapshot updated")
 			}
 		}
 	}()
 }
 
+// refreshHealthSnapshot updates the health snapshot with current state
 func (m *Manager) refreshHealthSnapshot(ctx context.Context, running bool) {
 	now := time.Now()
 	eventEntries := m.registry.GetEventRunners()
@@ -485,6 +517,90 @@ func (m *Manager) refreshHealthSnapshot(ctx context.Context, running bool) {
 	m.healthMu.Lock()
 	m.healthSnapshot = snap
 	m.healthMu.Unlock()
+
+	if running {
+		m.checkHealthAlerts(snap)
+	}
+}
+
+// checkHealthAlerts 检查健康快照，对连续失败达到阈值的监听器触发告警。
+// 恢复后自动清零计数；达到阈值后只在首次触发一次告警，避免重复。
+func (m *Manager) checkHealthAlerts(snap ManagerHealthSnapshot) {
+	threshold := m.cfg.HealthAlertThreshold
+	if threshold <= 0 {
+		return
+	}
+
+	m.healthMu.Lock()
+	defer m.healthMu.Unlock()
+
+	for name, st := range snap.Event {
+		key := "event:" + name
+		if !st.Alive || st.LenError != "" {
+			m.healthFailCounts[key]++
+			if m.healthFailCounts[key] == threshold {
+				reason := "heartbeat timeout"
+				if st.LenError != "" {
+					reason = "pending len error: " + st.LenError
+				}
+				m.cfg.Logger.Errorf("taskx: event[%s] unhealthy for %d consecutive checks: %s", name, threshold, reason)
+				m.enqueueAlert(core.AlertData{
+					Source:     core.AlertSourceEvent,
+					AlertType:  core.AlertListenerUnhealthy,
+					RunnerName: name,
+					Remark:     fmt.Sprintf("consecutive failures: %d, reason: %s", threshold, reason),
+				})
+			}
+		} else {
+			if m.healthFailCounts[key] > 0 {
+				m.cfg.Logger.Infof("taskx: event[%s] recovered after %d consecutive failures", name, m.healthFailCounts[key])
+			}
+			m.healthFailCounts[key] = 0
+		}
+	}
+
+	for name, st := range snap.Delay {
+		key := "delay:" + name
+		if !st.Alive || st.LenError != "" {
+			m.healthFailCounts[key]++
+			if m.healthFailCounts[key] == threshold {
+				reason := "heartbeat timeout"
+				if st.LenError != "" {
+					reason = "pending len error: " + st.LenError
+				}
+				m.cfg.Logger.Errorf("taskx: delay[%s] unhealthy for %d consecutive checks: %s", name, threshold, reason)
+				m.enqueueAlert(core.AlertData{
+					Source:     core.AlertSourceDelay,
+					AlertType:  core.AlertListenerUnhealthy,
+					RunnerName: name,
+					Remark:     fmt.Sprintf("consecutive failures: %d, reason: %s", threshold, reason),
+				})
+			}
+		} else {
+			if m.healthFailCounts[key] > 0 {
+				m.cfg.Logger.Infof("taskx: delay[%s] recovered after %d consecutive failures", name, m.healthFailCounts[key])
+			}
+			m.healthFailCounts[key] = 0
+		}
+	}
+
+	timerKey := "timer"
+	if !snap.Timer.Alive {
+		m.healthFailCounts[timerKey]++
+		if m.healthFailCounts[timerKey] == threshold {
+			m.cfg.Logger.Errorf("taskx: timer unhealthy for %d consecutive checks: heartbeat timeout", threshold)
+			m.enqueueAlert(core.AlertData{
+				Source:    core.AlertSourceTimer,
+				AlertType: core.AlertListenerUnhealthy,
+				Remark:    fmt.Sprintf("consecutive failures: %d, reason: heartbeat timeout", threshold),
+			})
+		}
+	} else {
+		if m.healthFailCounts[timerKey] > 0 {
+			m.cfg.Logger.Infof("taskx: timer recovered after %d consecutive failures", m.healthFailCounts[timerKey])
+		}
+		m.healthFailCounts[timerKey] = 0
+	}
 }
 
 func (m *Manager) startAlertDispatcherLocked() {
@@ -668,14 +784,20 @@ func (m *Manager) groupEventEntries(entries map[string]*EventEntry) map[string][
 
 // resolveEventGroupName 根据 runner name 解析所属的事件队列组名
 func (m *Manager) resolveEventGroupName(runnerName string) string {
+	name, _ := m.resolveEventGroupNameStrict(runnerName)
+	return name
+}
+
+// resolveEventGroupNameStrict 根据 runner name 解析所属的事件队列组名，并返回是否已注册。
+func (m *Manager) resolveEventGroupNameStrict(runnerName string) (groupName string, registered bool) {
 	entries := m.registry.GetEventRunners()
 	if entry, ok := entries[runnerName]; ok {
 		if entry.Option.QueueGroup != "" {
-			return entry.Option.QueueGroup
+			return entry.Option.QueueGroup, true
 		}
-		return core.DefaultEventQueueGroup
+		return core.DefaultEventQueueGroup, true
 	}
-	return runnerName
+	return runnerName, false
 }
 
 func (m *Manager) buildConsumerConfig() queue.ConsumerConfig {
@@ -683,7 +805,6 @@ func (m *Manager) buildConsumerConfig() queue.ConsumerConfig {
 		Lock:                m.cfg.LockDriver,
 		Prefix:              m.cfg.KeyPrefix,
 		LockTTL:             m.cfg.LockTTL,
-		ProcTimeout:         m.cfg.ProcessingTimeout,
 		RecoveryGracePeriod: m.cfg.RecoveryGracePeriod,
 		InternalOpTimeout:   m.cfg.InternalOpTimeout,
 		TraceKey:            m.cfg.TraceContextKey,
@@ -712,8 +833,8 @@ func (m *Manager) checkStartReadyLocked(ctx context.Context) (startEntries, erro
 	if m.cfg.HealthBeatTimeout <= 0 {
 		m.cfg.HealthBeatTimeout = defaults.HealthBeatTimeout
 	}
-	if m.cfg.EventPopTimeout <= 0 {
-		m.cfg.EventPopTimeout = defaults.EventPopTimeout
+	if m.cfg.EventPollInterval <= 0 {
+		m.cfg.EventPollInterval = defaults.EventPopTimeout
 	}
 	if m.cfg.DelayRetryBaseInterval <= 0 {
 		m.cfg.DelayRetryBaseInterval = defaults.DelayRetryBaseInterval
@@ -733,6 +854,9 @@ func (m *Manager) checkStartReadyLocked(ctx context.Context) (startEntries, erro
 	}
 	if m.cfg.AlertQueueSize <= 0 {
 		m.cfg.AlertQueueSize = 1024
+	}
+	if m.cfg.HealthAlertThreshold < 0 {
+		m.cfg.HealthAlertThreshold = defaults.HealthAlertThreshold
 	}
 	m.cfg.OnHeartbeat = m.recordHeartbeat
 

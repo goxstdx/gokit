@@ -11,7 +11,6 @@ import (
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 )
 
 // BootstrapExample 展示注册、启动、发布和优雅退出。
@@ -35,15 +34,15 @@ func BootstrapExample() {
 
 	_ = registry.RegisterEventRunner(
 		&OrderNotifyRunner{},
-		core.RunnerOption{MaxRetry: core.IntPtr(5), ConsumerCount: 3},
+		taskx.RunnerOption{MaxRetry: 5, ConsumerCount: 3},
 	)
 	_ = registry.RegisterDelayRunner(
 		&OrderNotifyRunner{},
-		core.RunnerOption{MaxRetry: core.IntPtr(3), ConsumerCount: 2},
+		taskx.RunnerOption{MaxRetry: 3, ConsumerCount: 2},
 	)
 	_ = registry.RegisterTimerTask(
-		&ReportTimerTask{}, core.TimerTaskOption{
-			ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencySinglePerTick),
+		&ReportTimerTask{}, taskx.TimerTaskOption{
+			ConcurrencyPolicy: taskx.TimerConcurrencyPolicyPtr(taskx.TimerConcurrencySinglePerTick),
 		},
 	)
 
@@ -53,11 +52,11 @@ func BootstrapExample() {
 		taskx.WithLogger(log),
 		taskx.WithPollInterval(time.Second),
 		taskx.WithLockTTL(30*time.Second),
-		taskx.WithProcessingTimeout(5*time.Minute),
+		taskx.WithRecoveryGracePeriod(30*time.Second),
 		taskx.WithDefaultTimerTaskOption(
-			core.TimerTaskOption{
-				MaxRetry:          core.IntPtr(0),
-				ConcurrencyPolicy: core.TimerConcurrencyPolicyPtr(core.TimerConcurrencyForbidOverlap),
+			taskx.TimerTaskOption{
+				MaxRetry:          taskx.IntPtr(0),
+				ConcurrencyPolicy: taskx.TimerConcurrencyPolicyPtr(taskx.TimerConcurrencyForbidOverlap),
 			},
 		),
 	)

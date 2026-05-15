@@ -35,7 +35,6 @@ type ConsumerConfig struct {
 	Lock                driver.LockDriver
 	Prefix              string
 	LockTTL             time.Duration
-	ProcTimeout         time.Duration
 	RecoveryGracePeriod time.Duration
 	InternalOpTimeout   time.Duration
 	TraceKey            string

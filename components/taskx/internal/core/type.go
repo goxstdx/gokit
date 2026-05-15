@@ -49,7 +49,7 @@ const DefaultEventQueueGroup = "_default_"
 
 // RunnerOption 队列 Runner 注册选项
 type RunnerOption struct {
-	MaxRetry      *int   // 最大重试次数，超过后进入死信队列。nil=默认 3，IntPtr(0)=不重试
+	MaxRetry      int    // 最大重试次数，超过后进入死信队列。0=不重试，正数=重试次数
 	ConsumerCount int    // 并发消费者数量，默认 1；同组多 runner 取最大值
 	QueueGroup    string // 事件队列分组名。为空使用默认共享组，非空则使用指定组。仅对 EventQueue 生效。
 }
@@ -147,17 +147,17 @@ const (
 	AlertQueueBacklog AlertType = "queue_backlog"
 	// AlertUnknownRunner 聚合队列中消息的 RunnerName 找不到对应的已注册 Runner
 	AlertUnknownRunner AlertType = "unknown_runner"
+	// AlertPublishUnregistered Publish 时 runner 未注册，消息被推入死信队列
+	AlertPublishUnregistered AlertType = "publish_unregistered"
+	// AlertListenerUnhealthy 监听器连续心跳失败达到阈值
+	AlertListenerUnhealthy AlertType = "listener_unhealthy"
 )
 
 func (o RunnerOption) Normalize() RunnerOption {
-	// 默认不重试
-	if o.MaxRetry == nil {
-		o.MaxRetry = IntPtr(defaults.DefaultMaxRetry)
-	} else if *o.MaxRetry < 0 {
-		o.MaxRetry = IntPtr(defaults.DefaultMaxRetry)
+	if o.MaxRetry < 0 {
+		o.MaxRetry = defaults.DefaultMaxRetry
 	}
 
-	// 默认单消费者
 	if o.ConsumerCount <= 0 {
 		o.ConsumerCount = 1
 	}

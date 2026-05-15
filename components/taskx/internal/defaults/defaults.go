@@ -6,7 +6,6 @@ const (
 	PollInterval           = time.Second
 	LockTTL                = 30 * time.Second
 	InternalOpTimeout      = 3 * time.Second
-	ProcessingTimeout      = 5 * time.Minute
 	HealthInterval         = 5 * time.Second
 	HealthBeatTimeout      = 15 * time.Second
 	TimerHeartbeatFallback = 5 * time.Second
@@ -18,6 +17,7 @@ const (
 	DelayDrainTimeout      = time.Second
 	HealthLenTimeout       = 2 * time.Second
 
+	HealthAlertThreshold     = 3
 	RecoveryGracePeriod      = 30 * time.Second
 	RecoveryLockMargin       = 30 * time.Second
 	DefaultLockRenewInterval = time.Second

@@ -26,7 +26,6 @@ type EventConsumer struct {
 	onHeartbeat         core.ListenerHeartbeatFunc
 	traceKey            string
 	lockTTL             time.Duration
-	procTimeout         time.Duration
 	recoveryGracePeriod time.Duration
 	internalOpTimeout   time.Duration
 	popTimeout          time.Duration
@@ -45,7 +44,6 @@ func NewEventConsumer(cfg EventConsumerConfig) *EventConsumer {
 		lock:                cfg.Lock,
 		keys:                cfg.Keys,
 		lockTTL:             cfg.LockTTL,
-		procTimeout:         cfg.ProcTimeout,
 		recoveryGracePeriod: cfg.RecoveryGracePeriod,
 		internalOpTimeout:   cfg.InternalOpTimeout,
 		popTimeout:          cfg.PopTimeout,
@@ -160,6 +158,7 @@ func (c *EventConsumer) periodicRecover(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			c.logger.Infof("taskx: event[%s] periodicRecover exiting, ctx cancelled: %v", c.logName(), ctx.Err())
 			return
 		case <-ticker.C:
 			c.doRecover(ctx, "periodic")
@@ -232,7 +231,12 @@ func (c *EventConsumer) doRecover(ctx context.Context, label string) {
 		}
 	}
 	if totalRecovered > 0 {
-		c.logger.Infof("taskx: event[%s] %s recovered %d orphaned messages from processing", c.logName(), label, totalRecovered)
+		c.logger.Infof(
+			"taskx: event[%s] %s recovered %d orphaned messages from processing",
+			c.logName(),
+			label,
+			totalRecovered,
+		)
 	}
 }
 
@@ -302,12 +306,17 @@ func (c *EventConsumer) consume(ctx context.Context, id int) {
 		pollInterval = defaults.EventPopTimeout
 	}
 
+	// 启动后立即消费一次，避免首次等待完整 pollInterval
+	c.beat()
+	c.fetchAndProcess(ctx, id)
+
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
+			c.logger.Infof("taskx: event[%s][%d] consume loop exiting, ctx cancelled: %v", c.logName(), id, ctx.Err())
 			return
 		case <-ticker.C:
 		}
@@ -321,13 +330,19 @@ func (c *EventConsumer) fetchAndProcess(ctx context.Context, id int) {
 	for {
 		select {
 		case <-ctx.Done():
+			c.logger.Infof("taskx: event[%s][%d] fetchAndProcess exiting, ctx cancelled: %v", c.logName(), id, ctx.Err())
 			return
 		default:
 		}
 
+		c.logger.Debugf(
+			"taskx: event[%s][%d] pop pending items, pending key: %s, processing key: %s, timeout: %v",
+			c.logName(), id, c.keys.Pending, c.keys.Processing, time.Duration(0),
+		)
 		raw, err := c.driver.PopToProcessing(ctx, c.keys.Pending, c.keys.Processing, 0)
 		if err != nil {
 			if ctx.Err() != nil {
+				c.logger.Infof("taskx: event[%s][%d] pop interrupted, ctx cancelled: %v", c.logName(), id, ctx.Err())
 				return
 			}
 			c.logger.Errorf("taskx: event[%s][%d] pop error: %v", c.logName(), id, err)
@@ -415,10 +430,10 @@ func (c *EventConsumer) process(ctx context.Context, raw string, id int) {
 	}
 	env.RetryCount++
 
-	if env.RetryCount > *entry.Option.MaxRetry {
+	if env.RetryCount > entry.Option.MaxRetry {
 		c.logger.Warnf(
 			"taskx: event[%s][%d] runner=%s max retry reached (%d), moving to dead letter",
-			c.logName(), id, env.RunnerName, *entry.Option.MaxRetry,
+			c.logName(), id, env.RunnerName, entry.Option.MaxRetry,
 		)
 		c.alert(
 			core.AlertData{

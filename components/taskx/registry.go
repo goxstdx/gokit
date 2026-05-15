@@ -51,7 +51,7 @@ func NewRegistry() *Registry {
 }
 
 func GetDefaultEventOption() core.RunnerOption {
-	return core.RunnerOption{MaxRetry: core.IntPtr(defaults.EventMaxRetry), ConsumerCount: defaults.EventConsumerCount}
+	return core.RunnerOption{MaxRetry: defaults.EventMaxRetry, ConsumerCount: defaults.EventConsumerCount}
 }
 
 // RegisterEventRunner 注册事件队列 Runner
@@ -74,7 +74,7 @@ func (r *Registry) RegisterEventRunner(runner core.QueueRunner, opts ...core.Run
 }
 
 func GetDefaultDelayOption() core.RunnerOption {
-	return core.RunnerOption{MaxRetry: core.IntPtr(defaults.DelayMaxRetry), ConsumerCount: defaults.DelayConsumerCount}
+	return core.RunnerOption{MaxRetry: defaults.DelayMaxRetry, ConsumerCount: defaults.DelayConsumerCount}
 }
 
 // RegisterDelayRunner 注册延迟队列 Runner

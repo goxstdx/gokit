@@ -20,13 +20,12 @@ type ManagerConfig struct {
 	Logger      core.Logger
 
 	KeyPrefix              string
-	PollInterval           time.Duration
-	EventPopTimeout        time.Duration
+	PollInterval           time.Duration // DelayQueue 轮询间隔
+	EventPollInterval      time.Duration // EventQueue 消费者轮询间隔
 	DelayRetryBaseInterval time.Duration
 	LockTTL                time.Duration
 	InternalOpTimeout      time.Duration
 	TimerHeartbeatInterval time.Duration
-	ProcessingTimeout      time.Duration
 	RecoveryGracePeriod    time.Duration // processing 中停留超过该时间的消息视为孤儿并恢复（默认 30s）
 	RecoverBatchSize       int64         // 崩溃恢复每批次移动的消息数量
 	DefaultTimerTask       core.TimerTaskOption
@@ -36,18 +35,18 @@ type ManagerConfig struct {
 	OnHeartbeat            core.ListenerHeartbeatFunc
 	HealthInterval         time.Duration
 	HealthBeatTimeout      time.Duration
+	HealthAlertThreshold   int // 连续多少次健康检测失败后触发告警，默认 3；0 表示不告警
 }
 
 func defaultConfig() *ManagerConfig {
 	return &ManagerConfig{
 		KeyPrefix:              "taskx",
 		PollInterval:           defaults.PollInterval,
-		EventPopTimeout:        defaults.EventPopTimeout,
+		EventPollInterval:      defaults.EventPopTimeout,
 		DelayRetryBaseInterval: defaults.DelayRetryBaseInterval,
 		LockTTL:                defaults.LockTTL,
 		InternalOpTimeout:      defaults.InternalOpTimeout,
 		TimerHeartbeatInterval: 0,
-		ProcessingTimeout:      defaults.ProcessingTimeout,
 		RecoveryGracePeriod:    defaults.RecoveryGracePeriod,
 		RecoverBatchSize:       defaults.RecoverBatchSize,
 		DefaultTimerTask: core.TimerTaskOption{
@@ -82,9 +81,9 @@ func WithPollInterval(d time.Duration) Option {
 	return func(c *ManagerConfig) { c.PollInterval = d }
 }
 
-// WithEventPopTimeout 设置 EventQueue BLMOVE 阻塞等待时长。
-func WithEventPopTimeout(d time.Duration) Option {
-	return func(c *ManagerConfig) { c.EventPopTimeout = d }
+// WithEventPollInterval 设置 EventQueue 消费者轮询间隔。
+func WithEventPollInterval(d time.Duration) Option {
+	return func(c *ManagerConfig) { c.EventPollInterval = d }
 }
 
 // WithDelayRetryBaseInterval 设置 DelayQueue 未显式返回 NextTime 时的线性重试基准间隔。
@@ -102,10 +101,6 @@ func WithInternalOpTimeout(d time.Duration) Option {
 
 func WithTimerHeartbeatInterval(d time.Duration) Option {
 	return func(c *ManagerConfig) { c.TimerHeartbeatInterval = d }
-}
-
-func WithProcessingTimeout(d time.Duration) Option {
-	return func(c *ManagerConfig) { c.ProcessingTimeout = d }
 }
 
 func WithRecoverBatchSize(n int64) Option {
@@ -147,4 +142,9 @@ func WithHealthInterval(d time.Duration) Option {
 // WithHealthBeatTimeout 设置监听器心跳超时时间
 func WithHealthBeatTimeout(d time.Duration) Option {
 	return func(c *ManagerConfig) { c.HealthBeatTimeout = d }
+}
+
+// WithHealthAlertThreshold 设置连续健康检测失败多少次后触发告警，0 表示不告警
+func WithHealthAlertThreshold(n int) Option {
+	return func(c *ManagerConfig) { c.HealthAlertThreshold = n }
 }

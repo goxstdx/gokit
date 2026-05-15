@@ -23,6 +23,7 @@ func (m *Manager) PublishEventPayload(ctx context.Context, runnerName string, pa
 }
 
 // PublishEventEnvelope 将指定 Envelope 发布到 EventQueue。
+// 若 runnerName 未在 Registry 中注册，消息将被推入死信队列并触发告警。
 func (m *Manager) PublishEventEnvelope(ctx context.Context, runnerName string, env *core.Envelope) (*core.Envelope, error) {
 	if m.cfg.EventDriver == nil {
 		return nil, fmt.Errorf("taskx: event queue driver not configured")
@@ -32,8 +33,26 @@ func (m *Manager) PublishEventEnvelope(ctx context.Context, runnerName string, e
 	}
 	env.Source = core.EnvelopeSourceEvent
 	env.RunnerName = runnerName
-	groupName := m.resolveEventGroupName(runnerName)
+
+	groupName, registered := m.resolveEventGroupNameStrict(runnerName)
 	keys := queue.NewQueueKeySet(m.cfg.KeyPrefix, "event", groupName)
+
+	if !registered {
+		errMsg := fmt.Errorf("taskx: event runner %q not registered, message pushed to dead letter queue", runnerName)
+		m.cfg.Logger.Errorf("%v", errMsg)
+		m.enqueueAlert(core.AlertData{
+			Source:     core.AlertSourceEvent,
+			AlertType:  core.AlertPublishUnregistered,
+			RunnerName: runnerName,
+			Envelope:   env,
+			Remark:     errMsg.Error(),
+		})
+		if pushErr := m.cfg.EventDriver.Push(ctx, keys.Dead, env.Encode()); pushErr != nil {
+			m.cfg.Logger.Errorf("taskx: event[%s] push to dead letter failed: %v", runnerName, pushErr)
+			return nil, fmt.Errorf("%w; additionally failed to push to dead letter: %v", errMsg, pushErr)
+		}
+		return nil, errMsg
+	}
 
 	if err := m.cfg.EventDriver.Push(ctx, keys.Pending, env.Encode()); err != nil {
 		return nil, err

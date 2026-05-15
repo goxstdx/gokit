@@ -29,6 +29,7 @@ func (m *Manager) PublishDelayPayload(
 }
 
 // PublishDelayEnvelope 将指定 Envelope 发布到 DelayQueue。
+// 若 runnerName 未在 Registry 中注册，消息将被推入死信队列并触发告警。
 func (m *Manager) PublishDelayEnvelope(
 	ctx context.Context,
 	runnerName string,
@@ -41,12 +42,32 @@ func (m *Manager) PublishDelayEnvelope(
 	if env == nil {
 		return nil, fmt.Errorf("taskx: envelope is nil")
 	}
-	if executeAt.IsZero() {
-		return nil, fmt.Errorf("taskx: executeAt must not be zero")
+	if executeAt.IsZero() || executeAt.Before(time.Now()) {
+		return nil, fmt.Errorf("taskx: executeAt must not be zero or in the past")
 	}
+
 	env.Source = core.EnvelopeSourceDelay
 	env.RunnerName = runnerName
 	keys := queue.NewQueueKeySet(m.cfg.KeyPrefix, "delay", runnerName)
+
+	if _, ok := m.registry.GetDelayRunners()[runnerName]; !ok {
+		errMsg := fmt.Errorf("taskx: delay runner %q not registered, message pushed to dead letter queue", runnerName)
+		m.cfg.Logger.Errorf("%v", errMsg)
+		m.enqueueAlert(core.AlertData{
+			Source:     core.AlertSourceDelay,
+			AlertType:  core.AlertPublishUnregistered,
+			RunnerName: runnerName,
+			Envelope:   env,
+			Remark:     errMsg.Error(),
+		})
+		deadAt := time.Now().UnixMicro()
+		if addErr := m.cfg.DelayDriver.Add(ctx, keys.Dead, env.Encode(), deadAt); addErr != nil {
+			m.cfg.Logger.Errorf("taskx: delay[%s] push to dead letter failed: %v", runnerName, addErr)
+			return nil, fmt.Errorf("%w; additionally failed to push to dead letter: %v", errMsg, addErr)
+		}
+		return nil, errMsg
+	}
+
 	if err := m.cfg.DelayDriver.Add(ctx, keys.Pending, env.Encode(), executeAt.UnixMicro()); err != nil {
 		return nil, err
 	}

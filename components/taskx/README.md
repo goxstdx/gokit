@@ -246,13 +246,13 @@ if env, err := mgr.PublishDelayPayload(ctx, "delay-runner-name", rawPayload, exe
 | `WithKeyPrefix(s)` | `"taskx"` | Redis key 前缀；HashTag 仍只使用 `{runner_name}` |
 | `WithLogger(l)` | 无（必填） | `logger_factory.Logger` 实例 |
 | `WithPollInterval(d)` | `1s` | DelayQueue 轮询间隔 |
-| `WithEventPopTimeout(d)` | `3s` | EventQueue 单次 `BLMOVE` 阻塞等待时长，影响空队列心跳与停机响应 |
+| `WithEventPollInterval(d)` | `3s` | EventQueue 消费者轮询间隔（从 pending 拉取消息的频率） |
 | `WithDelayRetryBaseInterval(d)` | `5s` | DelayQueue 未显式返回 `NextTime` 时的线性重试基准间隔，第 N 次重试默认延后 `N*d` |
 | `WithLockTTL(d)` | `30s` | 分布式锁默认 TTL |
 | `WithInternalOpTimeout(d)` | `3s` | 内部关键操作（如 Ack/RetryRequeue/MoveToDead/恢复锁续租与释放）使用的独立超时，避免受消费 ctx cancel 影响 |
 | `WithTimerHeartbeatInterval(d)` | 自动计算（`min(HealthInterval, HealthBeatTimeout/2)`，下限 `1s`） | Timer 心跳上报间隔；用于避免 `HealthBeatTimeout` 较小时误判不健康 |
-| `WithProcessingTimeout(d)` | `5m` | processing 队列超时时间，用于崩溃恢复等待 |
 | `WithRecoverBatchSize(n)` | `1000` | 崩溃恢复每批次移动的消息数量 |
+| `WithRecoveryGracePeriod(d)` | `30s` | processing 中停留超过该时间的消息视为孤儿并恢复到 pending |
 | `WithDefaultTimerTaskOption(opt)` | `MaxRetry=0, ConcurrencyPolicy=forbid_overlap` | TimerTask 全局默认选项，单任务未显式指定时继承 |
 | `WithAlertFunc(f)` | `nil`（仅日志） | 异常告警回调（内部异步通知，不阻塞消费主流程） |
 | `WithAlertQueueSize(n)` | `1024` | 内部告警通知通道容量，满时丢弃并记录日志 |

@@ -13,7 +13,6 @@ import (
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 )
 
 // AlertNotifyExample 展示如何在告警回调中接收 NextTime 通知，并由业务决定是否转投 DelayQueue。
@@ -29,12 +28,12 @@ func AlertNotifyExample() {
 	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
 	registry := taskx.NewRegistry()
 	runner := &rescheduleRunner{name: "notify-reschedule"}
-	_ = registry.RegisterEventRunner(runner, core.RunnerOption{MaxRetry: core.IntPtr(3), ConsumerCount: 1})
-	_ = registry.RegisterDelayRunner(runner, core.RunnerOption{MaxRetry: core.IntPtr(3), ConsumerCount: 1})
+	_ = registry.RegisterEventRunner(runner, taskx.RunnerOption{MaxRetry: 3, ConsumerCount: 1})
+	_ = registry.RegisterDelayRunner(runner, taskx.RunnerOption{MaxRetry: 3, ConsumerCount: 1})
 
 	var mgr *taskx.Manager
-	onAlert := func(data core.AlertData) {
-		if data.AlertType != core.AlertEventNextTimeIgnored || data.Envelope == nil || mgr == nil {
+	onAlert := func(data taskx.AlertData) {
+		if data.AlertType != taskx.AlertEventNextTimeIgnored || data.Envelope == nil || mgr == nil {
 			return
 		}
 
@@ -88,17 +87,17 @@ type rescheduleRunner struct {
 func (r *rescheduleRunner) GetName() string { return r.name }
 func (r *rescheduleRunner) Marshal() string { return `{"kind":"demo"}` }
 
-func (r *rescheduleRunner) Run(ctx context.Context, payload string) core.RunnerFuncResult {
+func (r *rescheduleRunner) Run(ctx context.Context, payload string) taskx.RunnerFuncResult {
 	traceID, _ := ctx.Value("trace_id").(string)
 	fmt.Printf("runner=%s payload=%s trace_id=%s\n", r.name, payload, traceID)
 
 	// 第一次在 EventQueue 中触发 NextTime 通知，后续在 DelayQueue 中按正常成功路径结束。
 	if r.step.Add(1) == 1 {
-		return core.RunnerFuncResult{
+		return taskx.RunnerFuncResult{
 			IsOk:     false,
 			Err:      fmt.Errorf("need reschedule"),
-			NextTime: core.TimePtr(time.Now().Add(3 * time.Second)),
+			NextTime: taskx.TimePtr(time.Now().Add(3 * time.Second)),
 		}
 	}
-	return core.RunnerFuncResult{IsOk: true}
+	return taskx.RunnerFuncResult{IsOk: true}
 }
