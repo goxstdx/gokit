@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
@@ -435,15 +434,6 @@ func (m *Manager) startMonitorLocked() {
 				return
 			case <-ticker.C:
 				m.refreshHealthSnapshot(ctx, true)
-
-				m.HealthSnapshot()
-				m.cfg.Logger.WithFields(
-					logger_factory.Fields{
-						logger_factory.String("event", fmt.Sprintf("%+v", m.eventBeatAt)),
-						logger_factory.String("delay", fmt.Sprintf("%+v", m.delayBeatAt)),
-						logger_factory.String("timer", fmt.Sprintf("%+v", m.timerBeatAt)),
-					},
-				).Infof("taskx: manager health snapshot updated")
 			}
 		}
 	}()
@@ -544,12 +534,14 @@ func (m *Manager) checkHealthAlerts(snap ManagerHealthSnapshot) {
 					reason = "pending len error: " + st.LenError
 				}
 				m.cfg.Logger.Errorf("taskx: event[%s] unhealthy for %d consecutive checks: %s", name, threshold, reason)
-				m.enqueueAlert(core.AlertData{
-					Source:     core.AlertSourceEvent,
-					AlertType:  core.AlertListenerUnhealthy,
-					RunnerName: name,
-					Remark:     fmt.Sprintf("consecutive failures: %d, reason: %s", threshold, reason),
-				})
+				m.enqueueAlert(
+					core.AlertData{
+						Source:     core.AlertSourceEvent,
+						AlertType:  core.AlertListenerUnhealthy,
+						RunnerName: name,
+						Remark:     fmt.Sprintf("consecutive failures: %d, reason: %s", threshold, reason),
+					},
+				)
 			}
 		} else {
 			if m.healthFailCounts[key] > 0 {
@@ -569,12 +561,14 @@ func (m *Manager) checkHealthAlerts(snap ManagerHealthSnapshot) {
 					reason = "pending len error: " + st.LenError
 				}
 				m.cfg.Logger.Errorf("taskx: delay[%s] unhealthy for %d consecutive checks: %s", name, threshold, reason)
-				m.enqueueAlert(core.AlertData{
-					Source:     core.AlertSourceDelay,
-					AlertType:  core.AlertListenerUnhealthy,
-					RunnerName: name,
-					Remark:     fmt.Sprintf("consecutive failures: %d, reason: %s", threshold, reason),
-				})
+				m.enqueueAlert(
+					core.AlertData{
+						Source:     core.AlertSourceDelay,
+						AlertType:  core.AlertListenerUnhealthy,
+						RunnerName: name,
+						Remark:     fmt.Sprintf("consecutive failures: %d, reason: %s", threshold, reason),
+					},
+				)
 			}
 		} else {
 			if m.healthFailCounts[key] > 0 {
@@ -589,11 +583,13 @@ func (m *Manager) checkHealthAlerts(snap ManagerHealthSnapshot) {
 		m.healthFailCounts[timerKey]++
 		if m.healthFailCounts[timerKey] == threshold {
 			m.cfg.Logger.Errorf("taskx: timer unhealthy for %d consecutive checks: heartbeat timeout", threshold)
-			m.enqueueAlert(core.AlertData{
-				Source:    core.AlertSourceTimer,
-				AlertType: core.AlertListenerUnhealthy,
-				Remark:    fmt.Sprintf("consecutive failures: %d, reason: heartbeat timeout", threshold),
-			})
+			m.enqueueAlert(
+				core.AlertData{
+					Source:    core.AlertSourceTimer,
+					AlertType: core.AlertListenerUnhealthy,
+					Remark:    fmt.Sprintf("consecutive failures: %d, reason: heartbeat timeout", threshold),
+				},
+			)
 		}
 	} else {
 		if m.healthFailCounts[timerKey] > 0 {

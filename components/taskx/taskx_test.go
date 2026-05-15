@@ -1148,3 +1148,363 @@ func TestEventNextTimeAlertAndNoRetry(t *testing.T) {
 		t.Fatalf("expected event queue empty after next-time ack, pending=%d processing=%d", pendingLen, processingLen)
 	}
 }
+
+// ============================================================
+// 测试：Lifecycle context 隔离 — 调用方 Start 传短超时 ctx 不影响消费
+// ============================================================
+func TestLifecycleContextIsolation(t *testing.T) {
+	rdb := newTestRedis()
+	skipIfNoRedis(t, rdb)
+	log := newTestLogger(t)
+
+	ctx := context.Background()
+	prefix := fmt.Sprintf("test_%d", time.Now().UnixNano())
+	defer cleanKeys(ctx, rdb, prefix)
+
+	var received atomic.Int64
+	runner := newTestRunner(
+		"ctx-iso", func(_ context.Context, _ string) core.RunnerFuncResult {
+			received.Add(1)
+			return core.RunnerFuncResult{IsOk: true}
+		},
+	)
+
+	reg := taskx.NewRegistry()
+	if err := reg.RegisterEventRunner(runner, core.RunnerOption{ConsumerCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := taskx.NewRedisManager(
+		rdb, reg,
+		taskx.WithKeyPrefix(prefix),
+		taskx.WithLogger(log),
+	)
+
+	// 用一个极短的超时 context 调用 Start，模拟业务侧 defer cancel() 的场景
+	startCtx, startCancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer startCancel()
+	if err := mgr.Start(startCtx); err != nil {
+		t.Fatal(err)
+	}
+
+	// 等 startCtx 超时被取消
+	time.Sleep(200 * time.Millisecond)
+
+	// 此时推送消息，消费协程应该仍然存活
+	if _, err := mgr.PublishEventPayload(ctx, "ctx-iso", "after-cancel"); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(3 * time.Second)
+
+	if err := mgr.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := received.Load(); got != 1 {
+		t.Fatalf("expected 1 message consumed after startCtx cancelled, got %d", got)
+	}
+}
+
+// ============================================================
+// 测试：Processing 崩溃恢复 — 模拟崩溃后 startup recovery 恢复 processing 消息
+// ============================================================
+func TestProcessingCrashRecovery(t *testing.T) {
+	rdb := newTestRedis()
+	skipIfNoRedis(t, rdb)
+	log := newTestLogger(t)
+
+	ctx := context.Background()
+	prefix := fmt.Sprintf("test_%d", time.Now().UnixNano())
+	defer cleanKeys(ctx, rdb, prefix)
+
+	// 手动向 processing ZSet 插入一条"超时"消息（score 设为 1 分钟前）
+	processingKey := prefix + ":event:{crash-recover}:processing"
+	pendingKey := prefix + ":event:{crash-recover}:pending"
+
+	env := core.NewEnvelope("orphaned-msg", core.EnvelopeSourceEvent)
+	env.RunnerName = "crash-recover"
+	oldScore := float64(time.Now().Add(-time.Minute).UnixMicro())
+	if err := rdb.(*redis.Client).ZAdd(ctx, processingKey, redis.Z{Score: oldScore, Member: env.Encode()}).Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 确认 processing 有数据
+	pLen, _ := rdb.ZCard(ctx, processingKey).Result()
+	if pLen == 0 {
+		t.Fatal("expected message in processing before start")
+	}
+
+	var received atomic.Int64
+	runner := newTestRunner(
+		"crash-recover", func(_ context.Context, _ string) core.RunnerFuncResult {
+			received.Add(1)
+			return core.RunnerFuncResult{IsOk: true}
+		},
+	)
+
+	reg := taskx.NewRegistry()
+	if err := reg.RegisterEventRunner(runner, core.RunnerOption{ConsumerCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := taskx.NewRedisManager(
+		rdb, reg,
+		taskx.WithKeyPrefix(prefix),
+		taskx.WithLogger(log),
+		taskx.WithRecoveryGracePeriod(5*time.Second),
+	)
+
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// 等待 startup recovery 恢复并消费
+	time.Sleep(5 * time.Second)
+
+	if err := mgr.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// processing 应为空
+	pLenAfter, _ := rdb.ZCard(ctx, processingKey).Result()
+	pendingLenAfter, _ := rdb.LLen(ctx, pendingKey).Result()
+	if pLenAfter != 0 {
+		t.Errorf("expected processing empty after recovery, got %d", pLenAfter)
+	}
+	// 消息应该被消费
+	if got := received.Load(); got != 1 {
+		t.Errorf("expected recovered message consumed once, got %d (pending=%d)", got, pendingLenAfter)
+	}
+}
+
+// ============================================================
+// 测试：Publish 未注册 runner — 消息推入死信队列 + 返回错误
+// ============================================================
+func TestPublishUnregisteredRunner(t *testing.T) {
+	rdb := newTestRedis()
+	skipIfNoRedis(t, rdb)
+	log := newTestLogger(t)
+
+	ctx := context.Background()
+	prefix := fmt.Sprintf("test_%d", time.Now().UnixNano())
+	defer cleanKeys(ctx, rdb, prefix)
+
+	alertCh := make(chan core.AlertData, 4)
+
+	// 只注册 "registered-event"，不注册 "unknown-event"
+	runner := newTestRunner("registered-event", nil)
+	reg := taskx.NewRegistry()
+	if err := reg.RegisterEventRunner(runner); err != nil {
+		t.Fatal(err)
+	}
+	delayRunner := newTestRunner("registered-delay", nil)
+	if err := reg.RegisterDelayRunner(delayRunner); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := taskx.NewRedisManager(
+		rdb, reg,
+		taskx.WithKeyPrefix(prefix),
+		taskx.WithLogger(log),
+		taskx.WithAlertFunc(func(data core.AlertData) {
+			select {
+			case alertCh <- data:
+			default:
+			}
+		}),
+	)
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = mgr.Stop(ctx) }()
+
+	// Event: 推送未注册的 runner
+	_, err := mgr.PublishEventPayload(ctx, "unknown-event", "should-go-to-dead")
+	if err == nil {
+		t.Fatal("expected error when publishing to unregistered event runner")
+	}
+
+	// 验证消息进入死信
+	deadKey := prefix + ":event:{unknown-event}:dead"
+	deadLen, _ := rdb.LLen(ctx, deadKey).Result()
+	if deadLen != 1 {
+		t.Fatalf("expected 1 message in event dead letter, got %d", deadLen)
+	}
+
+	// 验证 alert
+	select {
+	case alert := <-alertCh:
+		if alert.AlertType != core.AlertPublishUnregistered {
+			t.Fatalf("expected AlertPublishUnregistered, got %s", alert.AlertType)
+		}
+		if alert.Source != core.AlertSourceEvent {
+			t.Fatalf("expected event source, got %s", alert.Source)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for event publish alert")
+	}
+
+	// Delay: 推送未注册的 runner
+	_, err = mgr.PublishDelayPayload(ctx, "unknown-delay", "should-go-to-dead", time.Now().Add(time.Minute))
+	if err == nil {
+		t.Fatal("expected error when publishing to unregistered delay runner")
+	}
+
+	// 验证消息进入死信（delay dead 是 ZSet）
+	delayDeadKey := prefix + ":delay:{unknown-delay}:dead"
+	delayDeadLen, _ := rdb.ZCard(ctx, delayDeadKey).Result()
+	if delayDeadLen != 1 {
+		t.Fatalf("expected 1 message in delay dead letter, got %d", delayDeadLen)
+	}
+
+	select {
+	case alert := <-alertCh:
+		if alert.AlertType != core.AlertPublishUnregistered {
+			t.Fatalf("expected AlertPublishUnregistered, got %s", alert.AlertType)
+		}
+		if alert.Source != core.AlertSourceDelay {
+			t.Fatalf("expected delay source, got %s", alert.Source)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for delay publish alert")
+	}
+
+	// 已注册的 runner 应该正常推送
+	_, err = mgr.PublishEventPayload(ctx, "registered-event", "normal-msg")
+	if err != nil {
+		t.Fatalf("expected registered event publish to succeed: %v", err)
+	}
+}
+
+// ============================================================
+// 测试：Event 队列分组路由 — 同组共享队列，不同组独立
+// ============================================================
+func TestEventQueueGroupRouting(t *testing.T) {
+	rdb := newTestRedis()
+	skipIfNoRedis(t, rdb)
+	log := newTestLogger(t)
+
+	ctx := context.Background()
+	prefix := fmt.Sprintf("test_%d", time.Now().UnixNano())
+	defer cleanKeys(ctx, rdb, prefix)
+
+	var defaultGroupReceived atomic.Int64
+	var customGroupReceived atomic.Int64
+
+	runnerA := newTestRunner(
+		"group-default-a", func(_ context.Context, _ string) core.RunnerFuncResult {
+			defaultGroupReceived.Add(1)
+			return core.RunnerFuncResult{IsOk: true}
+		},
+	)
+	runnerB := newTestRunner(
+		"group-custom-b", func(_ context.Context, _ string) core.RunnerFuncResult {
+			customGroupReceived.Add(1)
+			return core.RunnerFuncResult{IsOk: true}
+		},
+	)
+
+	reg := taskx.NewRegistry()
+	// runnerA 使用默认组
+	if err := reg.RegisterEventRunner(runnerA, core.RunnerOption{ConsumerCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+	// runnerB 使用自定义组
+	if err := reg.RegisterEventRunner(runnerB, core.RunnerOption{ConsumerCount: 1, QueueGroup: "custom"}); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := taskx.NewRedisManager(
+		rdb, reg,
+		taskx.WithKeyPrefix(prefix),
+		taskx.WithLogger(log),
+	)
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = mgr.Stop(ctx) }()
+
+	// 推送到各自的 runner
+	if _, err := mgr.PublishEventPayload(ctx, "group-default-a", "msg-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.PublishEventPayload(ctx, "group-custom-b", "msg-b"); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(3 * time.Second)
+
+	if got := defaultGroupReceived.Load(); got != 1 {
+		t.Fatalf("expected default group runner received 1, got %d", got)
+	}
+	if got := customGroupReceived.Load(); got != 1 {
+		t.Fatalf("expected custom group runner received 1, got %d", got)
+	}
+
+	// 验证 key 结构：默认组用 _default_，自定义组用 custom
+	defaultPending := prefix + ":event:{_default_}:pending"
+	customPending := prefix + ":event:{custom}:pending"
+
+	dLen, _ := rdb.LLen(ctx, defaultPending).Result()
+	cLen, _ := rdb.LLen(ctx, customPending).Result()
+	if dLen != 0 || cLen != 0 {
+		t.Fatalf("expected both queues consumed, default pending=%d custom pending=%d", dLen, cLen)
+	}
+}
+
+// ============================================================
+// 测试：健康告警阈值 — 连续失败达阈值触发 AlertListenerUnhealthy
+// ============================================================
+func TestHealthAlertThreshold(t *testing.T) {
+	rdb := newTestRedis()
+	skipIfNoRedis(t, rdb)
+	log := newTestLogger(t)
+
+	ctx := context.Background()
+	prefix := fmt.Sprintf("test_%d", time.Now().UnixNano())
+	defer cleanKeys(ctx, rdb, prefix)
+
+	alertCh := make(chan core.AlertData, 10)
+
+	runner := newTestRunner("health-alert-runner", nil)
+	reg := taskx.NewRegistry()
+	if err := reg.RegisterEventRunner(runner, core.RunnerOption{ConsumerCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := taskx.NewRedisManager(
+		rdb, reg,
+		taskx.WithKeyPrefix(prefix),
+		taskx.WithLogger(log),
+		taskx.WithHealthInterval(100*time.Millisecond),
+		taskx.WithHealthBeatTimeout(1*time.Millisecond), // 极短的超时，使心跳必然"超时"
+		taskx.WithHealthAlertThreshold(3),
+		taskx.WithAlertFunc(func(data core.AlertData) {
+			if data.AlertType == core.AlertListenerUnhealthy {
+				select {
+				case alertCh <- data:
+				default:
+				}
+			}
+		}),
+	)
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// 等待足够的健康检测轮次（100ms * 5 = 500ms，应超过 threshold=3）
+	select {
+	case alert := <-alertCh:
+		if alert.AlertType != core.AlertListenerUnhealthy {
+			t.Fatalf("expected AlertListenerUnhealthy, got %s", alert.AlertType)
+		}
+		t.Logf("got health alert: source=%s runner=%s remark=%s", alert.Source, alert.RunnerName, alert.Remark)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for health unhealthy alert")
+	}
+
+	if err := mgr.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+}

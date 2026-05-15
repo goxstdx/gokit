@@ -184,6 +184,7 @@ func (c *EventConsumer) doRecover(ctx context.Context, label string) {
 		return
 	}
 	if !ok {
+		c.logger.Debugf("taskx: event[%s] %s recovery lock not acquired (held by another), skipping", c.logName(), label)
 		return
 	}
 	defer func() {
@@ -220,6 +221,8 @@ func (c *EventConsumer) doRecover(ctx context.Context, label string) {
 			)
 			return
 		}
+		c.logger.Debugf("taskx: event[%s] %s recovering, processingKey=%s, pendingKey=%s, gracePeriod=%v",
+			c.logName(), label, c.keys.Processing, c.keys.Pending, gp)
 		recovered, err := c.driver.RecoverProcessing(ctx, c.keys.Processing, c.keys.Pending, gp)
 		if err != nil {
 			c.logger.Warnf("taskx: event[%s] %s recover processing error: %v", c.logName(), label, err)
@@ -229,15 +232,14 @@ func (c *EventConsumer) doRecover(ctx context.Context, label string) {
 		if recovered == 0 {
 			break
 		}
+		c.logger.Infof("taskx: event[%s] %s batch recovered %d messages", c.logName(), label, recovered)
 	}
-	if totalRecovered > 0 {
-		c.logger.Infof(
-			"taskx: event[%s] %s recovered %d orphaned messages from processing",
-			c.logName(),
-			label,
-			totalRecovered,
-		)
-	}
+	c.logger.Infof(
+		"taskx: event[%s] %s recovery finished, recovered %d orphaned messages from processing",
+		c.logName(),
+		label,
+		totalRecovered,
+	)
 }
 
 func (c *EventConsumer) startRecoverRenewLoop(lockKey string, lockTTL time.Duration) (func(), <-chan struct{}) {
@@ -351,8 +353,23 @@ func (c *EventConsumer) fetchAndProcess(ctx context.Context, id int) {
 		if raw == "" {
 			return
 		}
-		c.process(ctx, raw, id)
+		c.safeProcess(ctx, raw, id)
 	}
+}
+
+func (c *EventConsumer) safeProcess(ctx context.Context, raw string, id int) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Errorf("taskx: event[%s][%d] panic in process: %v", c.logName(), id, r)
+			c.alert(core.AlertData{
+				Source:     core.AlertSourceEvent,
+				AlertType:  core.AlertCorruptMessage,
+				RunnerName: c.logName(),
+				Remark:     fmt.Sprintf("panic: %v", r),
+			})
+		}
+	}()
+	c.process(ctx, raw, id)
 }
 
 func (c *EventConsumer) process(ctx context.Context, raw string, id int) {

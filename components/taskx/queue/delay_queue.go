@@ -227,6 +227,11 @@ func (c *DelayConsumer) doRecover(ctx context.Context, label string) {
 		return
 	}
 	if !ok {
+		c.logger.Debugf(
+			"taskx: delay[%s] %s recovery lock not acquired (held by another), skipping",
+			c.runner.GetName(),
+			label,
+		)
 		return
 	}
 	defer func() {
@@ -251,7 +256,12 @@ func (c *DelayConsumer) doRecover(ctx context.Context, label string) {
 		default:
 		}
 		if time.Since(startedAt) > maxDuration {
-			err := fmt.Errorf("taskx: delay[%s] %s recovery exceeded max duration %v", c.runner.GetName(), label, maxDuration)
+			err := fmt.Errorf(
+				"taskx: delay[%s] %s recovery exceeded max duration %v",
+				c.runner.GetName(),
+				label,
+				maxDuration,
+			)
 			c.logger.Warnf("%v", err)
 			c.alert(
 				core.AlertData{
@@ -263,6 +273,10 @@ func (c *DelayConsumer) doRecover(ctx context.Context, label string) {
 			)
 			return
 		}
+		c.logger.Debugf(
+			"taskx: delay[%s] %s recovering, processingKey=%s, pendingKey=%s, gracePeriod=%v",
+			c.runner.GetName(), label, c.keys.Processing, c.keys.Pending, gp,
+		)
 		recovered, err := c.driver.RecoverProcessing(ctx, c.keys.Processing, c.keys.Pending, gp)
 		if err != nil {
 			c.logger.Warnf("taskx: delay[%s] %s recover processing error: %v", c.runner.GetName(), label, err)
@@ -272,10 +286,14 @@ func (c *DelayConsumer) doRecover(ctx context.Context, label string) {
 		if recovered == 0 {
 			break
 		}
+		c.logger.Infof("taskx: delay[%s] %s batch recovered %d messages", c.runner.GetName(), label, recovered)
 	}
-	if totalRecovered > 0 {
-		c.logger.Infof("taskx: delay[%s] %s recovered %d orphaned messages from processing", c.runner.GetName(), label, totalRecovered)
-	}
+	c.logger.Infof(
+		"taskx: delay[%s] %s recovery finished, recovered %d orphaned messages from processing",
+		c.runner.GetName(),
+		label,
+		totalRecovered,
+	)
 }
 
 func (c *DelayConsumer) startRecoverRenewLoop(lockKey string, lockTTL time.Duration) (func(), <-chan struct{}) {
@@ -411,7 +429,12 @@ func (c *DelayConsumer) fetch(ctx context.Context) {
 	for _, raw := range items {
 		select {
 		case <-ctx.Done():
-			c.logger.Infof("taskx: delay[%s] fetch dispatch interrupted, ctx cancelled: %v, remaining items: %d", c.runner.GetName(), ctx.Err(), len(items))
+			c.logger.Infof(
+				"taskx: delay[%s] fetch dispatch interrupted, ctx cancelled: %v, remaining items: %d",
+				c.runner.GetName(),
+				ctx.Err(),
+				len(items),
+			)
 			return
 		case c.taskCh <- raw:
 		}
@@ -430,9 +453,26 @@ func (c *DelayConsumer) work(ctx context.Context, id int) {
 			if !ok {
 				return
 			}
-			c.process(ctx, raw, id)
+			c.safeProcess(ctx, raw, id)
 		}
 	}
+}
+
+func (c *DelayConsumer) safeProcess(ctx context.Context, raw string, id int) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Errorf("taskx: delay[%s][%d] panic in process: %v", c.runner.GetName(), id, r)
+			c.alert(
+				core.AlertData{
+					Source:     core.AlertSourceDelay,
+					AlertType:  core.AlertCorruptMessage,
+					RunnerName: c.runner.GetName(),
+					Remark:     fmt.Sprintf("panic: %v", r),
+				},
+			)
+		}
+	}()
+	c.process(ctx, raw, id)
 }
 
 func (c *DelayConsumer) process(ctx context.Context, raw string, id int) {

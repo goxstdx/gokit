@@ -535,6 +535,114 @@ func TestStopAlertDispatcherDrainDoesNotInvokeExternalHandler(t *testing.T) {
 	}
 }
 
+func TestCheckHealthAlertsFiresOnThreshold(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.RegisterEventRunner(internalQueueRunner{name: "evt"}); err != nil {
+		t.Fatal(err)
+	}
+
+	alertCh := make(chan core.AlertData, 10)
+	mgr := NewManager(
+		reg,
+		WithLogger(newInternalTestLogger(t)),
+		WithLockDriver(internalLockDriver{}),
+		WithEventQueueDriver(internalEventDriver{}),
+		WithAlertFunc(func(data core.AlertData) {
+			alertCh <- data
+		}),
+		WithHealthAlertThreshold(3),
+	)
+	mgr.healthFailCounts = make(map[string]int)
+	mgr.alertHandler = mgr.cfg.OnAlert
+	mgr.alertQueue = make(chan core.AlertData, 10)
+	go func() {
+		for d := range mgr.alertQueue {
+			if mgr.alertHandler != nil {
+				mgr.alertHandler(d)
+			}
+		}
+	}()
+
+	unhealthySnap := ManagerHealthSnapshot{
+		Running: true,
+		Event:   map[string]QueueListenerHealth{"evt": {Alive: false}},
+		Delay:   map[string]QueueListenerHealth{},
+		Timer:   TimerListenerHealth{Alive: true},
+	}
+
+	// 前两次不触发
+	mgr.checkHealthAlerts(unhealthySnap)
+	mgr.checkHealthAlerts(unhealthySnap)
+	select {
+	case <-alertCh:
+		t.Fatal("should not fire alert before threshold")
+	default:
+	}
+
+	// 第三次触发
+	mgr.checkHealthAlerts(unhealthySnap)
+	select {
+	case alert := <-alertCh:
+		if alert.AlertType != core.AlertListenerUnhealthy {
+			t.Fatalf("expected AlertListenerUnhealthy, got %s", alert.AlertType)
+		}
+		if alert.RunnerName != "evt" {
+			t.Fatalf("expected runner name 'evt', got %s", alert.RunnerName)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for alert on threshold")
+	}
+
+	// 第四次不再重复触发
+	mgr.checkHealthAlerts(unhealthySnap)
+	select {
+	case <-alertCh:
+		t.Fatal("should not fire alert repeatedly after threshold")
+	default:
+	}
+
+	// 恢复后计数清零
+	healthySnap := ManagerHealthSnapshot{
+		Running: true,
+		Event:   map[string]QueueListenerHealth{"evt": {Alive: true}},
+		Delay:   map[string]QueueListenerHealth{},
+		Timer:   TimerListenerHealth{Alive: true},
+	}
+	mgr.checkHealthAlerts(healthySnap)
+	mgr.healthMu.RLock()
+	count := mgr.healthFailCounts["event:evt"]
+	mgr.healthMu.RUnlock()
+	if count != 0 {
+		t.Fatalf("expected fail count reset to 0 after recovery, got %d", count)
+	}
+
+	close(mgr.alertQueue)
+}
+
+func TestResolveEventGroupNameStrictReturnsFalseForUnregistered(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.RegisterEventRunner(internalQueueRunner{name: "registered-evt"}, core.RunnerOption{QueueGroup: "my-group"}); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager(reg, WithLogger(newInternalTestLogger(t)))
+
+	// 已注册 → 返回 group 和 true
+	group, ok := mgr.resolveEventGroupNameStrict("registered-evt")
+	if !ok {
+		t.Fatal("expected registered runner to return true")
+	}
+	if group != "my-group" {
+		t.Fatalf("expected group 'my-group', got %q", group)
+	}
+
+	// 未注册 → 返回 false
+	_, ok = mgr.resolveEventGroupNameStrict("not-exist")
+	if ok {
+		t.Fatal("expected unregistered runner to return false")
+	}
+}
+
 func TestExecuteTimerTaskOnceUsesFixedLockAndRequestPayload(t *testing.T) {
 	reg := NewRegistry()
 	runner := &manualExecuteTimerRunner{name: "manual-exec"}
