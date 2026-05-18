@@ -24,6 +24,7 @@
 package terminate
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -227,7 +228,7 @@ func (v *TerminateReceiver) TriggerShutdown() {
 
 func (v *TerminateReceiver) log(format string, args ...interface{}) {
 	if v.logger != nil {
-		v.logger.Infof(format, args...)
+		v.logger.InfoCtxf(logger_factory.WithCallerSkip(context.Background(), 1), format, args...)
 	} else {
 		fmt.Printf(format+"\n", args...)
 	}
