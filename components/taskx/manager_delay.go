@@ -42,7 +42,8 @@ func (m *Manager) PublishDelayEnvelope(
 	if env == nil {
 		return nil, fmt.Errorf("taskx: envelope is nil")
 	}
-	if executeAt.IsZero() || executeAt.Before(time.Now()) {
+	now := time.Now()
+	if executeAt.IsZero() || executeAt.Unix() < now.Unix() {
 		return nil, fmt.Errorf("taskx: executeAt must not be zero or in the past")
 	}
 

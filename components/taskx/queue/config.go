@@ -37,8 +37,17 @@ func (m RecoveryMode) WithPeriodicRecover() bool {
 	return m.Normalize() == RecoveryModeStartupAndPeriodic
 }
 
+// QueueKeyMeta 保存构建 QueueKeySet 时的原始语义信息。
+type QueueKeyMeta struct {
+	Prefix    string
+	QueueType string
+	Name      string
+	Base      string
+}
+
 // QueueKeySet 队列 key 集合，创建时一次性计算好，运行时直接引用，杜绝拼接错误。
 type QueueKeySet struct {
+	Meta         QueueKeyMeta
 	Pending      string
 	Processing   string
 	Dead         string
@@ -49,6 +58,12 @@ type QueueKeySet struct {
 func NewQueueKeySet(prefix, queueType, name string) QueueKeySet {
 	base := fmt.Sprintf("%s:%s:{%s}", prefix, queueType, name)
 	return QueueKeySet{
+		Meta: QueueKeyMeta{
+			Prefix:    prefix,
+			QueueType: queueType,
+			Name:      name,
+			Base:      base,
+		},
 		Pending:      base + ":pending",
 		Processing:   base + ":processing",
 		Dead:         base + ":dead",

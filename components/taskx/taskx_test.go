@@ -14,6 +14,7 @@ import (
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 	redisx "gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/provider/redis"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/queue"
 )
 
 // ============================================================
@@ -214,6 +215,7 @@ func TestEventQueueFlow(t *testing.T) {
 	if err := mgr.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = mgr.Stop(context.Background()) }()
 
 	// 发送一条成功消息
 	successRunner := newTestRunner("evt-flow", nil)
@@ -223,13 +225,16 @@ func TestEventQueueFlow(t *testing.T) {
 
 	ep := redisx.NewEventQueueProvider(rdb)
 	env := core.NewEnvelope("success-msg", core.EnvelopeSourceEvent)
-	pendingKey := prefix + ":event:{evt-flow}:pending"
+	env.RunnerName = "evt-flow"
+	eventKeys := queue.NewQueueKeySet(prefix, "event", core.DefaultEventQueueGroup)
+	pendingKey := eventKeys.Pending
 	if err := ep.Push(ctx, pendingKey, env.Encode()); err != nil {
 		t.Fatal(err)
 	}
 
 	// 发送一条总是失败的消息（应进入死信）
 	envFail := core.NewEnvelope("fail-always", core.EnvelopeSourceEvent)
+	envFail.RunnerName = "evt-flow"
 	if err := ep.Push(ctx, pendingKey, envFail.Encode()); err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +247,7 @@ func TestEventQueueFlow(t *testing.T) {
 	}
 
 	// 验证死信队列中有失败消息
-	deadKey := prefix + ":event:{evt-flow}:dead"
+	deadKey := eventKeys.Dead
 	deadLen, err := rdb.LLen(ctx, deadKey).Result()
 	if err != nil {
 		t.Fatal(err)
@@ -297,7 +302,8 @@ func TestDelayQueueFlow(t *testing.T) {
 
 	// 发布 3 条延迟消息，延迟 1 秒
 	dp := redisx.NewDelayQueueProvider(rdb)
-	pendingKey := prefix + ":delay:{dly-flow}:pending"
+	delayKeys := queue.NewQueueKeySet(prefix, "delay", "dly-flow")
+	pendingKey := delayKeys.Pending
 	executeAt := time.Now().Add(time.Second).UnixMicro()
 	for i := 0; i < 3; i++ {
 		env := core.NewEnvelope(fmt.Sprintf("delay-msg-%d", i), core.EnvelopeSourceDelay)
@@ -610,7 +616,8 @@ func TestGracefulShutdown(t *testing.T) {
 
 	// 推入两条消息，让两个消费者各处理一条
 	ep := redisx.NewEventQueueProvider(rdb)
-	pendingKey := prefix + ":event:{shutdown-test}:pending"
+	eventKeys := queue.NewQueueKeySet(prefix, "event", core.DefaultEventQueueGroup)
+	pendingKey := eventKeys.Pending
 	for i := 0; i < 2; i++ {
 		env := core.NewEnvelope(fmt.Sprintf("msg-%d", i), core.EnvelopeSourceEvent)
 		if err := ep.Push(ctx, pendingKey, env.Encode()); err != nil {
@@ -803,10 +810,13 @@ func TestDeadLetterRecovery(t *testing.T) {
 	if err := mgr.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = mgr.Stop(context.Background()) }()
 
 	ep := redisx.NewEventQueueProvider(rdb)
-	pendingKey := prefix + ":event:{dlq-recover}:pending"
+	eventKeys := queue.NewQueueKeySet(prefix, "event", core.DefaultEventQueueGroup)
+	pendingKey := eventKeys.Pending
 	env := core.NewEnvelope("will-fail-then-succeed", core.EnvelopeSourceEvent)
+	env.RunnerName = "dlq-recover"
 	if err := ep.Push(ctx, pendingKey, env.Encode()); err != nil {
 		t.Fatal(err)
 	}
@@ -814,7 +824,7 @@ func TestDeadLetterRecovery(t *testing.T) {
 	// 等待消息被消费并进入死信
 	time.Sleep(5 * time.Second)
 
-	deadKey := prefix + ":event:{dlq-recover}:dead"
+	deadKey := eventKeys.Dead
 	deadLen, _ := rdb.LLen(ctx, deadKey).Result()
 	t.Logf("dead letter count before recovery: %d", deadLen)
 	if deadLen == 0 {
@@ -967,7 +977,7 @@ func TestManagerHealthSnapshot(t *testing.T) {
 	deadline := time.Now().Add(4 * time.Second)
 	for time.Now().Before(deadline) {
 		snap = mgr.HealthSnapshot()
-		eventState, hasEvent := snap.Event["health-event"]
+		eventState, hasEvent := snap.Event[core.DefaultEventQueueGroup]
 		delayState, hasDelay := snap.Delay["health-delay"]
 		if snap.Running &&
 			hasEvent && hasDelay &&
@@ -1134,8 +1144,9 @@ func TestEventNextTimeAlertAndNoRetry(t *testing.T) {
 		t.Fatalf("expected run count=1, got=%d", got)
 	}
 
-	pendingKey := prefix + ":event:{evt-next-time}:pending"
-	processingKey := prefix + ":event:{evt-next-time}:processing"
+	eventKeys := queue.NewQueueKeySet(prefix, "event", core.DefaultEventQueueGroup)
+	pendingKey := eventKeys.Pending
+	processingKey := eventKeys.Processing
 	pendingLen, err := rdb.LLen(ctx, pendingKey).Result()
 	if err != nil {
 		t.Fatal(err)
@@ -1220,8 +1231,9 @@ func TestProcessingCrashRecovery(t *testing.T) {
 
 	// EventQueue 使用 queue group key（默认组 _default_），
 	// 这里要向默认组 processing 注入孤儿消息，RunnerName 决定路由到哪个 runner。
-	processingKey := prefix + ":event:{_default_}:processing"
-	pendingKey := prefix + ":event:{_default_}:pending"
+	eventKeys := queue.NewQueueKeySet(prefix, "event", core.DefaultEventQueueGroup)
+	processingKey := eventKeys.Processing
+	pendingKey := eventKeys.Pending
 
 	env := core.NewEnvelope("orphaned-msg", core.EnvelopeSourceEvent)
 	env.RunnerName = "crash-recover"
@@ -1336,7 +1348,7 @@ func TestPublishUnregisteredRunner(t *testing.T) {
 	}
 
 	// 验证消息进入死信
-	deadKey := prefix + ":event:{unknown-event}:dead"
+	deadKey := queue.NewQueueKeySet(prefix, "event", "unknown-event").Dead
 	deadLen, _ := rdb.LLen(ctx, deadKey).Result()
 	if deadLen != 1 {
 		t.Fatalf("expected 1 message in event dead letter, got %d", deadLen)
@@ -1362,7 +1374,7 @@ func TestPublishUnregisteredRunner(t *testing.T) {
 	}
 
 	// 验证消息进入死信（delay dead 是 ZSet）
-	delayDeadKey := prefix + ":delay:{unknown-delay}:dead"
+	delayDeadKey := queue.NewQueueKeySet(prefix, "delay", "unknown-delay").Dead
 	delayDeadLen, _ := rdb.ZCard(ctx, delayDeadKey).Result()
 	if delayDeadLen != 1 {
 		t.Fatalf("expected 1 message in delay dead letter, got %d", delayDeadLen)
@@ -1459,8 +1471,8 @@ func TestEventQueueGroupRouting(t *testing.T) {
 	}
 
 	// 验证 key 结构：默认组用 _default_，自定义组用 custom
-	defaultPending := prefix + ":event:{_default_}:pending"
-	customPending := prefix + ":event:{custom}:pending"
+	defaultPending := queue.NewQueueKeySet(prefix, "event", core.DefaultEventQueueGroup).Pending
+	customPending := queue.NewQueueKeySet(prefix, "event", "custom").Pending
 
 	dLen, _ := rdb.LLen(ctx, defaultPending).Result()
 	cLen, _ := rdb.LLen(ctx, customPending).Result()

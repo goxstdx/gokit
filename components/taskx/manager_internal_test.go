@@ -256,25 +256,22 @@ func TestSetRegistryFailsWhileRunning(t *testing.T) {
 	}
 }
 
-func TestCheckStartReadyFailsWithoutRegisteredRunner(t *testing.T) {
+func TestEmptyRegistryFailsCheckStartReadyAndStart(t *testing.T) {
 	mgr := NewManager(nil, WithLogger(newInternalTestLogger(t)))
+	if mgr.Registry() == nil {
+		t.Fatal("expected nil registry to be replaced with an empty registry")
+	}
 	if err := mgr.CheckStartReady(context.Background()); err == nil || !strings.Contains(
 		err.Error(),
 		"at least one runner/task",
 	) {
 		t.Fatalf("expected empty registry error, got %v", err)
 	}
-}
-func TestNewManagerWithNilRegistryStarts(t *testing.T) {
-	mgr := NewManager(nil, WithLogger(newInternalTestLogger(t)))
-	if mgr.Registry() == nil {
-		t.Fatal("expected nil registry to be replaced with an empty registry")
-	}
-	if err := mgr.Start(context.Background()); err != nil {
-		t.Fatalf("start with nil registry replacement: %v", err)
-	}
-	if err := mgr.Stop(context.Background()); err != nil {
-		t.Fatalf("stop: %v", err)
+	if err := mgr.Start(context.Background()); err == nil || !strings.Contains(
+		err.Error(),
+		"at least one runner/task must be registered",
+	) {
+		t.Fatalf("expected start to fail on empty registry, got %v", err)
 	}
 }
 
@@ -373,7 +370,10 @@ func TestStartFailureCleansAlertDispatcherAndStartedConsumers(t *testing.T) {
 	if err := reg.RegisterEventRunner(internalQueueRunner{name: "first"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := reg.RegisterEventRunner(internalQueueRunner{name: "second"}); err != nil {
+	if err := reg.RegisterEventRunner(
+		internalQueueRunner{name: "second"},
+		core.RunnerOption{QueueGroup: "second-group"},
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -420,7 +420,11 @@ func TestStartFailureCleansAlertDispatcherAndStartedConsumers(t *testing.T) {
 
 func TestPublishDelayAllowsImmediateExecuteAt(t *testing.T) {
 	drv := &internalDelayDriver{}
-	mgr := NewManager(nil, WithLogger(newInternalTestLogger(t)), WithDelayQueueDriver(drv))
+	reg := NewRegistry()
+	if err := reg.RegisterDelayRunner(internalQueueRunner{name: "delay-now"}); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewManager(reg, WithLogger(newInternalTestLogger(t)), WithDelayQueueDriver(drv))
 	now := time.Now()
 	env, err := mgr.PublishDelayPayload(context.Background(), "delay-now", "payload", now)
 	if err != nil {

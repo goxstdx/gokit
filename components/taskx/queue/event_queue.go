@@ -37,9 +37,14 @@ type EventConsumer struct {
 
 // NewEventConsumer 创建事件队列消费器
 func NewEventConsumer(cfg EventConsumerConfig) *EventConsumer {
+	groupName := cfg.Keys.Meta.Name
+	if groupName == "" {
+		groupName = cfg.Keys.Pending
+	}
+
 	return &EventConsumer{
 		runners:             cfg.Runners,
-		groupName:           cfg.Keys.Pending,
+		groupName:           groupName,
 		consumerCount:       cfg.ConsumerCount,
 		driver:              cfg.Driver,
 		lock:                cfg.Lock,
@@ -346,6 +351,11 @@ func (c *EventConsumer) consume(ctx context.Context, id int) {
 }
 
 func (c *EventConsumer) fetchAndProcess(ctx context.Context, id int) {
+	popTimeout := c.popTimeout
+	if popTimeout <= 0 {
+		popTimeout = defaults.EventPopTimeout
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -356,9 +366,9 @@ func (c *EventConsumer) fetchAndProcess(ctx context.Context, id int) {
 
 		c.logger.Debugf(
 			"taskx: event[%s][%d] pop pending items, pending key: %s, processing key: %s, timeout: %v",
-			c.logName(), id, c.keys.Pending, c.keys.Processing, time.Duration(0),
+			c.logName(), id, c.keys.Pending, c.keys.Processing, popTimeout,
 		)
-		raw, err := c.driver.PopToProcessing(ctx, c.keys.Pending, c.keys.Processing, 0)
+		raw, err := c.driver.PopToProcessing(ctx, c.keys.Pending, c.keys.Processing, popTimeout)
 		if err != nil {
 			if ctx.Err() != nil {
 				c.logger.Infof("taskx: event[%s][%d] pop interrupted, ctx cancelled: %v", c.logName(), id, ctx.Err())
