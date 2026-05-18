@@ -9,6 +9,8 @@ type Field struct {
 
 type Fields []Field
 
+type MapFields map[string]any
+
 func String(key, val string) Field {
 	return Field{Key: key, Value: val}
 }

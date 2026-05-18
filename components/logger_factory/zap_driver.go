@@ -191,8 +191,8 @@ func (z *zapLogger) WithFields(fields []Field) Logger {
 	}
 }
 
-func (z *zapLogger) WithMapFields(fields map[string]any) Logger {
-	newL := z.logger.With(toZapFieldsMap(fields)...)
+func (z *zapLogger) WithMapFields(mapFields MapFields) Logger {
+	newL := z.logger.With(toZapFieldsMap(mapFields)...)
 	return &zapLogger{
 		logger: newL,
 		sugar:  newL.Sugar(),

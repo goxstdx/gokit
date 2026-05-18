@@ -170,9 +170,9 @@ func (s *slogLogger) WithFields(fields []Field) Logger {
 	}
 }
 
-func (s *slogLogger) WithMapFields(fields map[string]any) Logger {
+func (s *slogLogger) WithMapFields(mapFields MapFields) Logger {
 	return &slogLogger{
-		logger:    s.logger.With(fieldsToSlogAttrsMap(fields)...),
+		logger:    s.logger.With(fieldsToSlogAttrsMap(mapFields)...),
 		cfg:       s.cfg,
 		addCaller: s.addCaller,
 	}
@@ -251,7 +251,7 @@ func fieldsToSlogAttrs(fields []Field) []any {
 	return attrs
 }
 
-func fieldsToSlogAttrsMap(fields map[string]any) []any {
+func fieldsToSlogAttrsMap(fields MapFields) []any {
 	attrs := make([]any, 0, len(fields))
 	for k, v := range fields {
 		attrs = append(attrs, slog.Any(k, v))
