@@ -79,13 +79,8 @@ func ConsumerWithProducerExample() {
 		consumer.WithLogger(log),
 	)
 
-	// 2. 创建 Producer（复用注册中心的分组/校验信息）
-	p := producer.NewRedisProducer(rdb,
-		producer.WithKeyPrefix("myapp"),
-		producer.WithLogger(log),
-		producer.WithEventGroupResolver(reg.EventGroupResolver()),
-		producer.WithDelayRegisteredChecker(reg.DelayRegisteredChecker()),
-	)
+	// 2. 从 Consumer 创建 Producer（自动复用配置 + 注册中心信息）
+	p := c.NewProducer()
 
 	ctx := context.Background()
 	if err := c.Start(ctx); err != nil {

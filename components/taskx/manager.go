@@ -10,6 +10,7 @@ import (
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/driver"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/queue"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/producer"
 )
 
 // consumer 内部消费器接口
@@ -42,6 +43,7 @@ type DelayConsumerFactory func(
 type Manager struct {
 	cfg      *ManagerConfig
 	registry *Registry
+	producer *producer.Producer
 
 	eventFactory EventConsumerFactory
 	delayFactory DelayConsumerFactory
@@ -69,28 +71,9 @@ type Manager struct {
 	healthFailCounts map[string]int // key = "event:{group}" / "delay:{name}" / "timer", value = 连续失败次数
 }
 
-// QueueListenerHealth 队列监听健康信息
-type QueueListenerHealth struct {
-	Alive      bool
-	LastBeatAt time.Time
-	PendingLen int64
-	LenError   string
-}
-
-// TimerListenerHealth 定时调度器健康信息
-type TimerListenerHealth struct {
-	Alive      bool
-	LastBeatAt time.Time
-}
-
-// ManagerHealthSnapshot 管理器健康快照
-type ManagerHealthSnapshot struct {
-	Running   bool
-	CheckedAt time.Time
-	Event     map[string]QueueListenerHealth
-	Delay     map[string]QueueListenerHealth
-	Timer     TimerListenerHealth
-}
+type QueueListenerHealth = core.QueueListenerHealth
+type TimerListenerHealth = core.TimerListenerHealth
+type ManagerHealthSnapshot = core.HealthSnapshot
 
 type startEntries struct {
 	event map[string]*EventEntry
@@ -108,13 +91,15 @@ func NewManager(registry *Registry, opts ...Option) *Manager {
 		registry = NewRegistry()
 	}
 
-	return &Manager{
+	m := &Manager{
 		cfg:              cfg,
 		registry:         registry,
 		eventBeatAt:      make(map[string]time.Time),
 		delayBeatAt:      make(map[string]time.Time),
 		healthFailCounts: make(map[string]int),
 	}
+	m.rebuildProducer()
+	return m
 }
 
 // Config 获取管理器配置
@@ -150,6 +135,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.lifecycleCtx, m.lifecycleCancel = context.WithCancel(context.Background())
 
 	m.startAlertDispatcherLocked()
+	m.rebuildProducer()
 	startSucceeded := false
 	defer func() {
 		if !startSucceeded {

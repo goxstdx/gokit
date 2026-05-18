@@ -33,11 +33,17 @@ func NewRedisManager(rdb redis.Cmdable, registry *Registry, opts ...Option) *Man
 	ep.SetRecoverBatchSize(mgr.cfg.RecoverBatchSize)
 	dp.SetRecoverBatchSize(mgr.cfg.RecoverBatchSize)
 
-	mgr.SetEventConsumerFactory(newEventConsumerFactory)
-	mgr.SetDelayConsumerFactory(newDelayConsumerFactory)
-	mgr.SetTimerSchedulerFactory(newTimerSchedulerFactory)
+	mgr.SetDefaultFactories()
 
 	return mgr
+}
+
+// SetDefaultFactories 设置默认的消费器/调度器工厂（Redis 实现）。
+// 已由 NewRedisManager 自动调用；仅当使用 NewManager + 自定义 Driver 时需手动调用。
+func (m *Manager) SetDefaultFactories() {
+	m.SetEventConsumerFactory(newEventConsumerFactory)
+	m.SetDelayConsumerFactory(newDelayConsumerFactory)
+	m.SetTimerSchedulerFactory(newTimerSchedulerFactory)
 }
 
 func newEventConsumerFactory(cfg queue.EventConsumerConfig) consumer {
