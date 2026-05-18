@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/queue"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/driver"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/queue"
 )
 
 // EventGroupResolver 根据 runnerName 解析所属事件队列组名。
@@ -59,15 +59,20 @@ func (p *Producer) PublishEventEnvelope(ctx context.Context, runnerName string, 
 	keys := queue.NewQueueKeySet(p.cfg.KeyPrefix, "event", groupName)
 
 	if !registered {
-		errMsg := fmt.Errorf("taskx/producer: event runner %q not registered, message pushed to dead letter queue", runnerName)
+		errMsg := fmt.Errorf(
+			"taskx/producer: event runner %q not registered, message pushed to dead letter queue",
+			runnerName,
+		)
 		p.logErrorf("%v", errMsg)
-		p.alert(core.AlertData{
-			Source:     core.AlertSourceEvent,
-			AlertType:  core.AlertPublishUnregistered,
-			RunnerName: runnerName,
-			Envelope:   env,
-			Remark:     errMsg.Error(),
-		})
+		p.alert(
+			core.AlertData{
+				Source:     core.AlertSourceEvent,
+				AlertType:  core.AlertPublishUnregistered,
+				RunnerName: runnerName,
+				Envelope:   env,
+				Remark:     errMsg.Error(),
+			},
+		)
 		if pushErr := p.cfg.EventDriver.Push(ctx, keys.Dead, env.Encode()); pushErr != nil {
 			p.logErrorf("taskx/producer: event[%s] push to dead letter failed: %v", runnerName, pushErr)
 			return nil, fmt.Errorf("%w; additionally failed to push to dead letter: %v", errMsg, pushErr)
@@ -124,15 +129,20 @@ func (p *Producer) PublishDelayEnvelope(
 	keys := queue.NewQueueKeySet(p.cfg.KeyPrefix, "delay", runnerName)
 
 	if !p.isDelayRegistered(runnerName) {
-		errMsg := fmt.Errorf("taskx/producer: delay runner %q not registered, message pushed to dead letter queue", runnerName)
+		errMsg := fmt.Errorf(
+			"taskx/producer: delay runner %q not registered, message pushed to dead letter queue",
+			runnerName,
+		)
 		p.logErrorf("%v", errMsg)
-		p.alert(core.AlertData{
-			Source:     core.AlertSourceDelay,
-			AlertType:  core.AlertPublishUnregistered,
-			RunnerName: runnerName,
-			Envelope:   env,
-			Remark:     errMsg.Error(),
-		})
+		p.alert(
+			core.AlertData{
+				Source:     core.AlertSourceDelay,
+				AlertType:  core.AlertPublishUnregistered,
+				RunnerName: runnerName,
+				Envelope:   env,
+				Remark:     errMsg.Error(),
+			},
+		)
 		deadAt := time.Now().UnixMicro()
 		if addErr := p.cfg.DelayDriver.Add(ctx, keys.Dead, env.Encode(), deadAt); addErr != nil {
 			p.logErrorf("taskx/producer: delay[%s] push to dead letter failed: %v", runnerName, addErr)

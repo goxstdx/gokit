@@ -4,38 +4,18 @@ import (
 	"fmt"
 	"time"
 
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/driver"
 )
 
-// RecoveryMode 队列恢复模式
-type RecoveryMode uint8
+// RecoveryMode 保留为 core.RecoveryMode 的 alias，便于 queue 内部引用。
+type RecoveryMode = core.RecoveryMode
 
 const (
-	// RecoveryModeNone 不进行任何恢复
-	RecoveryModeNone RecoveryMode = iota
-	// RecoveryModeStartupOnly 仅在启动时恢复一次（默认）
-	RecoveryModeStartupOnly
-	// RecoveryModeStartupAndPeriodic 启动恢复 + 周期性兜底恢复
-	RecoveryModeStartupAndPeriodic
+	RecoveryModeNone               = core.RecoveryModeNone
+	RecoveryModeStartupOnly        = core.RecoveryModeStartupOnly
+	RecoveryModeStartupAndPeriodic = core.RecoveryModeStartupAndPeriodic
 )
-
-func (m RecoveryMode) Normalize() RecoveryMode {
-	switch m {
-	case RecoveryModeNone, RecoveryModeStartupOnly, RecoveryModeStartupAndPeriodic:
-		return m
-	default:
-		return RecoveryModeStartupOnly
-	}
-}
-
-func (m RecoveryMode) WithStartupRecover() bool {
-	return m.Normalize() != RecoveryModeNone
-}
-
-func (m RecoveryMode) WithPeriodicRecover() bool {
-	return m.Normalize() == RecoveryModeStartupAndPeriodic
-}
 
 // QueueKeyMeta 保存构建 QueueKeySet 时的原始语义信息。
 type QueueKeyMeta struct {
@@ -72,9 +52,6 @@ func NewQueueKeySet(prefix, queueType, name string) QueueKeySet {
 }
 
 // ConsumerConfig 队列消费者公共配置。
-// LockDriver 放入此处是因为 Event 和 Delay 消费者都需要它做崩溃恢复锁，属于公共基础设施。
-// 队列类型特定的 Driver（EventQueueDriver / DelayQueueDriver）保留在各自的子配置中，
-// 避免共享 struct 携带不相关的依赖。
 type ConsumerConfig struct {
 	Lock                driver.LockDriver
 	Prefix              string
@@ -100,8 +77,8 @@ type EventConsumerConfig struct {
 	Driver        driver.EventQueueDriver
 	PopTimeout    time.Duration
 	Keys          QueueKeySet
-	Runners       map[string]EventRunnerEntry // runner name -> entry，聚合队列路由表
-	ConsumerCount int                         // 该组的消费者协程数量
+	Runners       map[string]EventRunnerEntry
+	ConsumerCount int
 }
 
 // DelayConsumerConfig 延迟队列消费者配置

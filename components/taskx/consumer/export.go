@@ -7,17 +7,17 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
-	redisx "gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/provider/redis"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/queue"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/driver"
+	redis_provider "gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/provider/redis"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/queue"
 )
 
 // NewRedisConsumer 快捷构造：传入 redis.Cmdable 自动创建 Redis 驱动并组装 Consumer。
 func NewRedisConsumer(rdb redis.Cmdable, registry *Registry, opts ...Option) *Consumer {
-	ep := redisx.NewEventQueueProvider(rdb)
-	dp := redisx.NewDelayQueueProvider(rdb)
-	lp := redisx.NewLockProvider(rdb)
+	ep := redis_provider.NewEventQueueProvider(rdb)
+	dp := redis_provider.NewDelayQueueProvider(rdb)
+	lp := redis_provider.NewLockProvider(rdb)
 
 	allOpts := []Option{
 		WithEventQueueDriver(ep),
@@ -85,14 +85,16 @@ func recoverEventDeadWithReset(
 		if err != nil {
 			logger.Warnf("taskx/consumer: recover event dead: skip corrupt message, raw: %s, err: %v", raw, err)
 			if onAlert != nil {
-				onAlert(core.AlertData{
-					Source:    core.AlertSourceEvent,
-					AlertType: core.AlertCorruptMessage,
-					RunnerResult: core.RunnerFuncResult{
-						IsOk: false,
-						Err:  fmt.Errorf("recover event dead: corrupt message skipped, raw: %s", raw),
+				onAlert(
+					core.AlertData{
+						Source:    core.AlertSourceEvent,
+						AlertType: core.AlertCorruptMessage,
+						RunnerResult: core.RunnerFuncResult{
+							IsOk: false,
+							Err:  fmt.Errorf("recover event dead: corrupt message skipped, raw: %s", raw),
+						},
 					},
-				})
+				)
 			}
 			continue
 		}
@@ -127,14 +129,16 @@ func recoverDelayDeadWithReset(
 		if err != nil {
 			logger.Warnf("taskx/consumer: recover delay dead: skip corrupt message, raw: %s, err: %v", raw, err)
 			if onAlert != nil {
-				onAlert(core.AlertData{
-					Source:    core.AlertSourceDelay,
-					AlertType: core.AlertCorruptMessage,
-					RunnerResult: core.RunnerFuncResult{
-						IsOk: false,
-						Err:  fmt.Errorf("recover delay dead: corrupt message skipped, raw: %s", raw),
+				onAlert(
+					core.AlertData{
+						Source:    core.AlertSourceDelay,
+						AlertType: core.AlertCorruptMessage,
+						RunnerResult: core.RunnerFuncResult{
+							IsOk: false,
+							Err:  fmt.Errorf("recover delay dead: corrupt message skipped, raw: %s", raw),
+						},
 					},
-				})
+				)
 			}
 			continue
 		}

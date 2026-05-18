@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/queue"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/queue"
 )
 
 // PublishEvent 发布事件到 EventQueue，并返回创建的 Envelope。
@@ -40,13 +40,15 @@ func (m *Manager) PublishEventEnvelope(ctx context.Context, runnerName string, e
 	if !registered {
 		errMsg := fmt.Errorf("taskx: event runner %q not registered, message pushed to dead letter queue", runnerName)
 		m.cfg.Logger.Errorf("%v", errMsg)
-		m.enqueueAlert(core.AlertData{
-			Source:     core.AlertSourceEvent,
-			AlertType:  core.AlertPublishUnregistered,
-			RunnerName: runnerName,
-			Envelope:   env,
-			Remark:     errMsg.Error(),
-		})
+		m.enqueueAlert(
+			core.AlertData{
+				Source:     core.AlertSourceEvent,
+				AlertType:  core.AlertPublishUnregistered,
+				RunnerName: runnerName,
+				Envelope:   env,
+				Remark:     errMsg.Error(),
+			},
+		)
 		if pushErr := m.cfg.EventDriver.Push(ctx, keys.Dead, env.Encode()); pushErr != nil {
 			m.cfg.Logger.Errorf("taskx: event[%s] push to dead letter failed: %v", runnerName, pushErr)
 			return nil, fmt.Errorf("%w; additionally failed to push to dead letter: %v", errMsg, pushErr)

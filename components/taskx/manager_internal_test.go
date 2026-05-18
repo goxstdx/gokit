@@ -10,7 +10,7 @@ import (
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/queue"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/queue"
 )
 
 func newInternalTestLogger(t *testing.T) core.Logger {
@@ -551,9 +551,11 @@ func TestCheckHealthAlertsFiresOnThreshold(t *testing.T) {
 		WithLogger(newInternalTestLogger(t)),
 		WithLockDriver(internalLockDriver{}),
 		WithEventQueueDriver(internalEventDriver{}),
-		WithAlertFunc(func(data core.AlertData) {
-			alertCh <- data
-		}),
+		WithAlertFunc(
+			func(data core.AlertData) {
+				alertCh <- data
+			},
+		),
 		WithHealthAlertThreshold(3),
 	)
 	mgr.healthFailCounts = make(map[string]int)
@@ -625,7 +627,10 @@ func TestCheckHealthAlertsFiresOnThreshold(t *testing.T) {
 
 func TestResolveEventGroupNameStrictReturnsFalseForUnregistered(t *testing.T) {
 	reg := NewRegistry()
-	if err := reg.RegisterEventRunner(internalQueueRunner{name: "registered-evt"}, core.RunnerOption{QueueGroup: "my-group"}); err != nil {
+	if err := reg.RegisterEventRunner(
+		internalQueueRunner{name: "registered-evt"},
+		core.RunnerOption{QueueGroup: "my-group"},
+	); err != nil {
 		t.Fatal(err)
 	}
 

@@ -13,8 +13,8 @@ import (
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
-	redisx "gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/provider/redis"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/queue"
+	redis_provider "gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/provider/redis"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/queue"
 )
 
 // ============================================================
@@ -223,7 +223,7 @@ func TestEventQueueFlow(t *testing.T) {
 		return core.RunnerFuncResult{IsOk: true}
 	}
 
-	ep := redisx.NewEventQueueProvider(rdb)
+	ep := redis_provider.NewEventQueueProvider(rdb)
 	env := core.NewEnvelope("success-msg", core.EnvelopeSourceEvent)
 	env.RunnerName = "evt-flow"
 	eventKeys := queue.NewQueueKeySet(prefix, "event", core.DefaultEventQueueGroup)
@@ -301,7 +301,7 @@ func TestDelayQueueFlow(t *testing.T) {
 	}
 
 	// 发布 3 条延迟消息，延迟 1 秒
-	dp := redisx.NewDelayQueueProvider(rdb)
+	dp := redis_provider.NewDelayQueueProvider(rdb)
 	delayKeys := queue.NewQueueKeySet(prefix, "delay", "dly-flow")
 	pendingKey := delayKeys.Pending
 	executeAt := time.Now().Add(time.Second).UnixMicro()
@@ -615,7 +615,7 @@ func TestGracefulShutdown(t *testing.T) {
 	}
 
 	// 推入两条消息，让两个消费者各处理一条
-	ep := redisx.NewEventQueueProvider(rdb)
+	ep := redis_provider.NewEventQueueProvider(rdb)
 	eventKeys := queue.NewQueueKeySet(prefix, "event", core.DefaultEventQueueGroup)
 	pendingKey := eventKeys.Pending
 	for i := 0; i < 2; i++ {
@@ -662,7 +662,7 @@ func TestRedisLock(t *testing.T) {
 	prefix := fmt.Sprintf("test_%d", time.Now().UnixNano())
 	defer cleanKeys(ctx, rdb, prefix)
 
-	lp := redisx.NewLockProvider(rdb)
+	lp := redis_provider.NewLockProvider(rdb)
 	lockKey := prefix + ":lock:{test-lock}"
 
 	// 第一次加锁应成功
@@ -684,7 +684,7 @@ func TestRedisLock(t *testing.T) {
 	}
 
 	// 另一个 provider 也无法获取同一把锁
-	lp2 := redisx.NewLockProvider(rdb)
+	lp2 := redis_provider.NewLockProvider(rdb)
 	ok3, err := lp2.Lock(ctx, lockKey, 10*time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -749,7 +749,7 @@ func TestRedisLockConcurrency(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		go func() {
 			defer wg.Done()
-			lp := redisx.NewLockProvider(rdb)
+			lp := redis_provider.NewLockProvider(rdb)
 			ok, err := lp.Lock(ctx, lockKey, 10*time.Second)
 			if err != nil {
 				t.Errorf("lock error: %v", err)
@@ -812,7 +812,7 @@ func TestDeadLetterRecovery(t *testing.T) {
 	}
 	defer func() { _ = mgr.Stop(context.Background()) }()
 
-	ep := redisx.NewEventQueueProvider(rdb)
+	ep := redis_provider.NewEventQueueProvider(rdb)
 	eventKeys := queue.NewQueueKeySet(prefix, "event", core.DefaultEventQueueGroup)
 	pendingKey := eventKeys.Pending
 	env := core.NewEnvelope("will-fail-then-succeed", core.EnvelopeSourceEvent)
@@ -1238,7 +1238,11 @@ func TestProcessingCrashRecovery(t *testing.T) {
 	env := core.NewEnvelope("orphaned-msg", core.EnvelopeSourceEvent)
 	env.RunnerName = "crash-recover"
 	oldScore := float64(time.Now().Add(-time.Minute).UnixMicro())
-	if err := rdb.(*redis.Client).ZAdd(ctx, processingKey, redis.Z{Score: oldScore, Member: env.Encode()}).Err(); err != nil {
+	if err := rdb.(*redis.Client).ZAdd(
+		ctx,
+		processingKey,
+		redis.Z{Score: oldScore, Member: env.Encode()},
+	).Err(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1329,12 +1333,14 @@ func TestPublishUnregisteredRunner(t *testing.T) {
 		rdb, reg,
 		taskx.WithKeyPrefix(prefix),
 		taskx.WithLogger(log),
-		taskx.WithAlertFunc(func(data core.AlertData) {
-			select {
-			case alertCh <- data:
-			default:
-			}
-		}),
+		taskx.WithAlertFunc(
+			func(data core.AlertData) {
+				select {
+				case alertCh <- data:
+				default:
+				}
+			},
+		),
 	)
 	if err := mgr.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -1508,14 +1514,16 @@ func TestHealthAlertThreshold(t *testing.T) {
 		taskx.WithHealthInterval(100*time.Millisecond),
 		taskx.WithHealthBeatTimeout(1*time.Millisecond), // 极短的超时，使心跳必然"超时"
 		taskx.WithHealthAlertThreshold(3),
-		taskx.WithAlertFunc(func(data core.AlertData) {
-			if data.AlertType == core.AlertListenerUnhealthy {
-				select {
-				case alertCh <- data:
-				default:
+		taskx.WithAlertFunc(
+			func(data core.AlertData) {
+				if data.AlertType == core.AlertListenerUnhealthy {
+					select {
+					case alertCh <- data:
+					default:
+					}
 				}
-			}
-		}),
+			},
+		),
 	)
 	if err := mgr.Start(ctx); err != nil {
 		t.Fatal(err)

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/queue"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/queue"
 )
 
 // PublishDelay 发布延迟任务到 DelayQueue，并返回创建的 Envelope。
@@ -54,13 +54,15 @@ func (m *Manager) PublishDelayEnvelope(
 	if _, ok := m.registry.GetDelayRunners()[runnerName]; !ok {
 		errMsg := fmt.Errorf("taskx: delay runner %q not registered, message pushed to dead letter queue", runnerName)
 		m.cfg.Logger.Errorf("%v", errMsg)
-		m.enqueueAlert(core.AlertData{
-			Source:     core.AlertSourceDelay,
-			AlertType:  core.AlertPublishUnregistered,
-			RunnerName: runnerName,
-			Envelope:   env,
-			Remark:     errMsg.Error(),
-		})
+		m.enqueueAlert(
+			core.AlertData{
+				Source:     core.AlertSourceDelay,
+				AlertType:  core.AlertPublishUnregistered,
+				RunnerName: runnerName,
+				Envelope:   env,
+				Remark:     errMsg.Error(),
+			},
+		)
 		deadAt := time.Now().UnixMicro()
 		if addErr := m.cfg.DelayDriver.Add(ctx, keys.Dead, env.Encode(), deadAt); addErr != nil {
 			m.cfg.Logger.Errorf("taskx: delay[%s] push to dead letter failed: %v", runnerName, addErr)

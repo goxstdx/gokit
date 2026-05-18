@@ -8,8 +8,8 @@ import (
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/queue"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/timer"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/queue"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/timer"
 )
 
 // internalConsumer 内部消费器接口
@@ -72,7 +72,7 @@ type HealthSnapshot struct {
 
 // New 创建 Consumer。
 func New(registry *Registry, opts ...Option) *Consumer {
-	cfg := defaultConfig()
+	cfg := core.DefaultConfig()
 	for _, o := range opts {
 		o(cfg)
 	}
@@ -320,8 +320,10 @@ func (c *Consumer) checkReadyLocked() error {
 	if (len(eventEntries)+len(delayEntries)) > 0 &&
 		c.cfg.RecoveryMode != queue.RecoveryModeNone &&
 		c.cfg.LockDriver == nil {
-		return fmt.Errorf("taskx/consumer: lock driver required for recovery mode with %d queue runner(s)",
-			len(eventEntries)+len(delayEntries))
+		return fmt.Errorf(
+			"taskx/consumer: lock driver required for recovery mode with %d queue runner(s)",
+			len(eventEntries)+len(delayEntries),
+		)
 	}
 	if len(eventEntries) > 0 && c.cfg.EventDriver == nil {
 		return fmt.Errorf("taskx/consumer: event queue driver not configured for %d event runner(s)", len(eventEntries))
@@ -651,12 +653,14 @@ func (c *Consumer) checkHealthAlerts(snap HealthSnapshot) {
 				if st.LenError != "" {
 					reason = "pending len error: " + st.LenError
 				}
-				c.enqueueAlert(core.AlertData{
-					Source:     core.AlertSourceEvent,
-					AlertType:  core.AlertListenerUnhealthy,
-					RunnerName: name,
-					Remark:     fmt.Sprintf("consecutive failures: %d, reason: %s", threshold, reason),
-				})
+				c.enqueueAlert(
+					core.AlertData{
+						Source:     core.AlertSourceEvent,
+						AlertType:  core.AlertListenerUnhealthy,
+						RunnerName: name,
+						Remark:     fmt.Sprintf("consecutive failures: %d, reason: %s", threshold, reason),
+					},
+				)
 			}
 		} else {
 			c.healthFailCounts[key] = 0
@@ -672,12 +676,14 @@ func (c *Consumer) checkHealthAlerts(snap HealthSnapshot) {
 				if st.LenError != "" {
 					reason = "pending len error: " + st.LenError
 				}
-				c.enqueueAlert(core.AlertData{
-					Source:     core.AlertSourceDelay,
-					AlertType:  core.AlertListenerUnhealthy,
-					RunnerName: name,
-					Remark:     fmt.Sprintf("consecutive failures: %d, reason: %s", threshold, reason),
-				})
+				c.enqueueAlert(
+					core.AlertData{
+						Source:     core.AlertSourceDelay,
+						AlertType:  core.AlertListenerUnhealthy,
+						RunnerName: name,
+						Remark:     fmt.Sprintf("consecutive failures: %d, reason: %s", threshold, reason),
+					},
+				)
 			}
 		} else {
 			c.healthFailCounts[key] = 0
@@ -688,11 +694,13 @@ func (c *Consumer) checkHealthAlerts(snap HealthSnapshot) {
 	if !snap.Timer.Alive {
 		c.healthFailCounts[timerKey]++
 		if c.healthFailCounts[timerKey] == threshold {
-			c.enqueueAlert(core.AlertData{
-				Source:    core.AlertSourceTimer,
-				AlertType: core.AlertListenerUnhealthy,
-				Remark:    fmt.Sprintf("consecutive failures: %d, reason: heartbeat timeout", threshold),
-			})
+			c.enqueueAlert(
+				core.AlertData{
+					Source:    core.AlertSourceTimer,
+					AlertType: core.AlertListenerUnhealthy,
+					Remark:    fmt.Sprintf("consecutive failures: %d, reason: heartbeat timeout", threshold),
+				},
+			)
 		}
 	} else {
 		c.healthFailCounts[timerKey] = 0

@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/queue"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/driver"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/queue"
 )
 
 // consumer 内部消费器接口
@@ -100,7 +100,7 @@ type startEntries struct {
 
 // NewManager 创建任务管理器
 func NewManager(registry *Registry, opts ...Option) *Manager {
-	cfg := defaultConfig()
+	cfg := core.DefaultConfig()
 	for _, o := range opts {
 		o(cfg)
 	}

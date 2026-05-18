@@ -3,8 +3,8 @@ package producer
 import (
 	"strings"
 
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/driver"
 )
 
 // Config Producer 配置

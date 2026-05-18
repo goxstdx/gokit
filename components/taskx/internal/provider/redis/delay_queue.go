@@ -7,7 +7,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/driver"
 )
 
 var _ driver.DelayQueueDriver = (*DelayQueueProvider)(nil)
@@ -33,9 +33,15 @@ func (p *DelayQueueProvider) Add(ctx context.Context, queue string, data string,
 	return p.rdb.ZAdd(ctx, queue, redis.Z{Score: float64(executeAt), Member: data}).Err()
 }
 
-func (p *DelayQueueProvider) TransferToProcessing(ctx context.Context, pendingQueue, processingQueue string, maxScore int64, count int64) ([]string, error) {
+func (p *DelayQueueProvider) TransferToProcessing(
+	ctx context.Context,
+	pendingQueue, processingQueue string,
+	maxScore int64,
+	count int64,
+) ([]string, error) {
 	processingScore := time.Now().UnixMicro()
-	result, err := scriptDelayTransfer.Run(ctx, p.rdb,
+	result, err := scriptDelayTransfer.Run(
+		ctx, p.rdb,
 		[]string{pendingQueue, processingQueue},
 		maxScore, count, processingScore,
 	).Result()
@@ -64,16 +70,34 @@ func (p *DelayQueueProvider) Ack(ctx context.Context, processingQueue string, da
 	return p.rdb.ZRem(ctx, processingQueue, data).Err()
 }
 
-func (p *DelayQueueProvider) RetryRequeue(ctx context.Context, processingQueue, pendingQueue string, oldData, newData string, executeAt int64) error {
-	_, err := scriptDelayRetryRequeue.Run(ctx, p.rdb, []string{processingQueue, pendingQueue}, oldData, newData, executeAt).Result()
+func (p *DelayQueueProvider) RetryRequeue(
+	ctx context.Context,
+	processingQueue, pendingQueue string,
+	oldData, newData string,
+	executeAt int64,
+) error {
+	_, err := scriptDelayRetryRequeue.Run(
+		ctx,
+		p.rdb,
+		[]string{processingQueue, pendingQueue},
+		oldData,
+		newData,
+		executeAt,
+	).Result()
 	if err != nil && err != redis.Nil {
 		return err
 	}
 	return nil
 }
 
-func (p *DelayQueueProvider) Nack(ctx context.Context, processingQueue, pendingQueue string, data string, executeAt int64) error {
-	_, err := scriptDelayNack.Run(ctx, p.rdb,
+func (p *DelayQueueProvider) Nack(
+	ctx context.Context,
+	processingQueue, pendingQueue string,
+	data string,
+	executeAt int64,
+) error {
+	_, err := scriptDelayNack.Run(
+		ctx, p.rdb,
 		[]string{processingQueue, pendingQueue},
 		data, executeAt,
 	).Result()
@@ -85,7 +109,8 @@ func (p *DelayQueueProvider) Nack(ctx context.Context, processingQueue, pendingQ
 
 func (p *DelayQueueProvider) MoveToDead(ctx context.Context, processingQueue, deadQueue string, data string) error {
 	deadAt := time.Now().UnixMicro()
-	_, err := scriptDelayMoveToDead.Run(ctx, p.rdb,
+	_, err := scriptDelayMoveToDead.Run(
+		ctx, p.rdb,
 		[]string{processingQueue, deadQueue},
 		data, deadAt,
 	).Result()
@@ -97,7 +122,8 @@ func (p *DelayQueueProvider) MoveToDead(ctx context.Context, processingQueue, de
 
 func (p *DelayQueueProvider) RecoverDead(ctx context.Context, deadQueue, pendingQueue string, count int64) (int64, error) {
 	newScore := time.Now().UnixMicro()
-	result, err := scriptDelayRecoverDead.Run(ctx, p.rdb,
+	result, err := scriptDelayRecoverDead.Run(
+		ctx, p.rdb,
 		[]string{deadQueue, pendingQueue},
 		count, newScore,
 	).Int64()
@@ -124,10 +150,15 @@ func (p *DelayQueueProvider) PopFromDead(ctx context.Context, deadQueue string) 
 	return "", nil
 }
 
-func (p *DelayQueueProvider) RecoverProcessing(ctx context.Context, processingQueue, pendingQueue string, timeout time.Duration) (int64, error) {
+func (p *DelayQueueProvider) RecoverProcessing(
+	ctx context.Context,
+	processingQueue, pendingQueue string,
+	timeout time.Duration,
+) (int64, error) {
 	timeoutScore := time.Now().Add(-timeout).UnixMicro()
 	newScore := time.Now().UnixMicro()
-	result, err := scriptDelayRecoverProcessing.Run(ctx, p.rdb,
+	result, err := scriptDelayRecoverProcessing.Run(
+		ctx, p.rdb,
 		[]string{processingQueue, pendingQueue},
 		fmt.Sprintf("%d", timeoutScore), newScore, p.recoverBatch,
 	).Int64()

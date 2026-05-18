@@ -238,3 +238,32 @@ func DecodeEnvelope(raw string) (*Envelope, error) {
 	}
 	return &env, nil
 }
+
+// RecoveryMode 队列恢复模式
+type RecoveryMode uint8
+
+const (
+	// RecoveryModeNone 不进行任何恢复
+	RecoveryModeNone RecoveryMode = iota
+	// RecoveryModeStartupOnly 仅在启动时恢复一次（默认）
+	RecoveryModeStartupOnly
+	// RecoveryModeStartupAndPeriodic 启动恢复 + 周期性兜底恢复
+	RecoveryModeStartupAndPeriodic
+)
+
+func (m RecoveryMode) Normalize() RecoveryMode {
+	switch m {
+	case RecoveryModeNone, RecoveryModeStartupOnly, RecoveryModeStartupAndPeriodic:
+		return m
+	default:
+		return RecoveryModeStartupOnly
+	}
+}
+
+func (m RecoveryMode) WithStartupRecover() bool {
+	return m.Normalize() != RecoveryModeNone
+}
+
+func (m RecoveryMode) WithPeriodicRecover() bool {
+	return m.Normalize() == RecoveryModeStartupAndPeriodic
+}

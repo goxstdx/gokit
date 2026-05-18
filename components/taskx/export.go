@@ -7,18 +7,18 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
-	redisx "gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/provider/redis"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/queue"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/timer"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/driver"
+	redis_provider "gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/provider/redis"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/queue"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/timer"
 )
 
 // NewRedisManager 快捷构造：传入 redis.Cmdable 自动创建 Redis 驱动并组装 Manager。
 func NewRedisManager(rdb redis.Cmdable, registry *Registry, opts ...Option) *Manager {
-	ep := redisx.NewEventQueueProvider(rdb)
-	dp := redisx.NewDelayQueueProvider(rdb)
-	lp := redisx.NewLockProvider(rdb)
+	ep := redis_provider.NewEventQueueProvider(rdb)
+	dp := redis_provider.NewDelayQueueProvider(rdb)
+	lp := redis_provider.NewLockProvider(rdb)
 
 	allOpts := []Option{
 		WithEventQueueDriver(ep),

@@ -7,7 +7,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/driver"
 )
 
 var _ driver.EventQueueDriver = (*EventQueueProvider)(nil)
@@ -36,9 +36,14 @@ func (p *EventQueueProvider) Push(ctx context.Context, queue string, data string
 
 // PopToProcessing 通过 Lua 脚本原子地从 pending List RPOP 并 ZADD 到 processing ZSet。
 // 非阻塞操作，调用方需自行轮询。timeout 参数保留以兼容接口签名，内部不使用。
-func (p *EventQueueProvider) PopToProcessing(ctx context.Context, pendingQueue, processingQueue string, _ time.Duration) (string, error) {
+func (p *EventQueueProvider) PopToProcessing(
+	ctx context.Context,
+	pendingQueue, processingQueue string,
+	_ time.Duration,
+) (string, error) {
 	score := float64(time.Now().UnixMicro())
-	val, err := scriptEventPopToProcessing.Run(ctx, p.rdb,
+	val, err := scriptEventPopToProcessing.Run(
+		ctx, p.rdb,
 		[]string{pendingQueue, processingQueue},
 		score,
 	).Text()
@@ -55,7 +60,11 @@ func (p *EventQueueProvider) Ack(ctx context.Context, processingQueue string, da
 	return p.rdb.ZRem(ctx, processingQueue, data).Err()
 }
 
-func (p *EventQueueProvider) RetryRequeue(ctx context.Context, processingQueue, pendingQueue string, oldData, newData string) error {
+func (p *EventQueueProvider) RetryRequeue(
+	ctx context.Context,
+	processingQueue, pendingQueue string,
+	oldData, newData string,
+) error {
 	_, err := scriptEventRetryRequeue.Run(ctx, p.rdb, []string{processingQueue, pendingQueue}, oldData, newData).Result()
 	if err != nil && err != redis.Nil {
 		return err
@@ -99,9 +108,14 @@ func (p *EventQueueProvider) PopFromDead(ctx context.Context, deadQueue string) 
 }
 
 // RecoverProcessing 恢复 processing ZSet 中停留超过 timeout 的消息到 pending List。
-func (p *EventQueueProvider) RecoverProcessing(ctx context.Context, processingQueue, pendingQueue string, timeout time.Duration) (int64, error) {
+func (p *EventQueueProvider) RecoverProcessing(
+	ctx context.Context,
+	processingQueue, pendingQueue string,
+	timeout time.Duration,
+) (int64, error) {
 	timeoutScore := time.Now().Add(-timeout).UnixMicro()
-	result, err := scriptEventRecoverProcessing.Run(ctx, p.rdb,
+	result, err := scriptEventRecoverProcessing.Run(
+		ctx, p.rdb,
 		[]string{processingQueue, pendingQueue},
 		fmt.Sprintf("%d", timeoutScore), p.recoverBatch,
 	).Int64()

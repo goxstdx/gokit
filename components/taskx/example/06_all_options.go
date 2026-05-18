@@ -8,7 +8,7 @@ import (
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx"
-	redisx "gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/provider/redis"
+	redis_provider "gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/provider/redis"
 )
 
 // AllOptionsExample 展示 taskx 的“大而全”配置用法：
@@ -54,9 +54,9 @@ func AllOptionsExample(ctx context.Context, rdb redis.Cmdable) error {
 	)
 
 	// 显式创建 driver，并通过 WithXxxDriver 注入，演示所有可配置项。
-	eventDriver := redisx.NewEventQueueProvider(rdb)
-	delayDriver := redisx.NewDelayQueueProvider(rdb)
-	lockDriver := redisx.NewLockProvider(rdb)
+	eventDriver := redis_provider.NewEventQueueProvider(rdb)
+	delayDriver := redis_provider.NewDelayQueueProvider(rdb)
+	lockDriver := redis_provider.NewLockProvider(rdb)
 
 	mgr := taskx.NewRedisManager(
 		rdb,
