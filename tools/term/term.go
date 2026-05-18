@@ -14,6 +14,8 @@ import (
 var (
 	once            sync.Once
 	defaultReceiver *TerminateReceiver
+
+	defaultListenSignal = []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT}
 )
 
 // TerminateReceiver 项目发布或者自动伸缩时，k8s会给本程序的应用进程发送SIGTERM信号量，这里就是监控该信号量
@@ -34,20 +36,26 @@ type TerminateReceiver struct {
 	// signalHandler  map[os.Signal]func() // 监听到Term信号量是进行的操作
 }
 
+func NewTerminateReceiver(signals ...os.Signal) *TerminateReceiver {
+	signals = tools.SliceUnique(append(signals, defaultListenSignal...))
+
+	return &TerminateReceiver{
+		NotifyChan:     make(chan struct{}),
+		MainIsDoneChan: make(chan struct{}),
+		wg:             sync.WaitGroup{},
+		isStop:         false,
+		logger:         nil,
+		listenChan:     make(chan os.Signal),
+		listenSignal:   signals,
+		defaultHandler: nil,
+	}
+}
+
 // GetTerminateReceiver 单例模式
 func GetTerminateReceiver() *TerminateReceiver {
 	once.Do(
 		func() {
-			defaultReceiver = &TerminateReceiver{
-				NotifyChan:     make(chan struct{}),
-				MainIsDoneChan: make(chan struct{}),
-				wg:             sync.WaitGroup{},
-				isStop:         false,
-				logger:         nil,
-				listenChan:     make(chan os.Signal),
-				listenSignal:   []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGKILL},
-				defaultHandler: nil,
-			}
+			defaultReceiver = NewTerminateReceiver()
 		},
 	)
 
@@ -179,6 +187,7 @@ func IsStop() bool {
 // IsStop 用于检测是否收到了Term信号量
 func VoluntaryWithdrawal() {
 	if defaultReceiver != nil {
-		defaultReceiver.listenChan <- syscall.SIGTERM
+		// defaultReceiver.listenChan <- syscall.SIGTERM
+		defaultReceiver.MainIsDoneChan <- struct{}{}
 	}
 }
