@@ -53,6 +53,7 @@ func BootstrapExample() {
 		taskx.WithPollInterval(time.Second),
 		taskx.WithLockTTL(30*time.Second),
 		taskx.WithRecoveryGracePeriod(30*time.Second),
+		taskx.WithRecoveryMode(taskx.RecoveryModeStartupAndPeriodic),
 		taskx.WithDefaultTimerTaskOption(
 			taskx.TimerTaskOption{
 				MaxRetry:          taskx.IntPtr(0),

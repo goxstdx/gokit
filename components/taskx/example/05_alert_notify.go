@@ -62,6 +62,7 @@ func AlertNotifyExample() {
 		taskx.WithLogger(log),
 		taskx.WithPollInterval(500*time.Millisecond),
 		taskx.WithTraceContextKey("trace_id"),
+		taskx.WithRecoveryMode(taskx.RecoveryModeStartupOnly),
 		taskx.WithAlertFunc(onAlert),
 	)
 

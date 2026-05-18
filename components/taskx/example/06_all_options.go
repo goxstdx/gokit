@@ -85,6 +85,8 @@ func AllOptionsExample(ctx context.Context, rdb redis.Cmdable) error {
 		taskx.WithRecoverBatchSize(500),
 		// WithRecoveryGracePeriod：processing 中停留超过该时间的消息视为孤儿并恢复到 pending（默认 30s）。
 		taskx.WithRecoveryGracePeriod(30*time.Second),
+		// WithRecoveryMode：队列恢复模式（不恢复 / 仅启动恢复(默认) / 启动+轮询恢复）。
+		taskx.WithRecoveryMode(taskx.RecoveryModeStartupAndPeriodic),
 		// WithDefaultTimerTaskOption：全局 TimerTask 默认配置（单任务可覆盖）。
 		taskx.WithDefaultTimerTaskOption(
 			taskx.TimerTaskOption{

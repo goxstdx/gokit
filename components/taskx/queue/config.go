@@ -8,6 +8,35 @@ import (
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 )
 
+// RecoveryMode 队列恢复模式
+type RecoveryMode uint8
+
+const (
+	// RecoveryModeNone 不进行任何恢复
+	RecoveryModeNone RecoveryMode = iota
+	// RecoveryModeStartupOnly 仅在启动时恢复一次（默认）
+	RecoveryModeStartupOnly
+	// RecoveryModeStartupAndPeriodic 启动恢复 + 周期性兜底恢复
+	RecoveryModeStartupAndPeriodic
+)
+
+func (m RecoveryMode) Normalize() RecoveryMode {
+	switch m {
+	case RecoveryModeNone, RecoveryModeStartupOnly, RecoveryModeStartupAndPeriodic:
+		return m
+	default:
+		return RecoveryModeStartupOnly
+	}
+}
+
+func (m RecoveryMode) WithStartupRecover() bool {
+	return m.Normalize() != RecoveryModeNone
+}
+
+func (m RecoveryMode) WithPeriodicRecover() bool {
+	return m.Normalize() == RecoveryModeStartupAndPeriodic
+}
+
 // QueueKeySet 队列 key 集合，创建时一次性计算好，运行时直接引用，杜绝拼接错误。
 type QueueKeySet struct {
 	Pending      string
@@ -36,6 +65,7 @@ type ConsumerConfig struct {
 	Prefix              string
 	LockTTL             time.Duration
 	RecoveryGracePeriod time.Duration
+	RecoveryMode        RecoveryMode
 	InternalOpTimeout   time.Duration
 	TraceKey            string
 	Logger              core.Logger

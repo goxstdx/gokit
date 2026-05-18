@@ -2,6 +2,7 @@ package taskx
 
 import (
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/queue"
 )
 
 // 重新导出 core 包中的类型，使外部使用方可以直接通过 taskx 包访问
@@ -21,6 +22,7 @@ type AlertFunc = core.AlertFunc
 type AlertType = core.AlertType
 type AlertSource = core.AlertSource
 type AlertData = core.AlertData
+type RecoveryMode = queue.RecoveryMode
 
 const (
 	TimerConcurrencyForbidOverlap = core.TimerConcurrencyForbidOverlap
@@ -28,6 +30,12 @@ const (
 )
 
 const DefaultEventQueueGroup = core.DefaultEventQueueGroup
+
+const (
+	RecoveryModeNone               = queue.RecoveryModeNone
+	RecoveryModeStartupOnly        = queue.RecoveryModeStartupOnly
+	RecoveryModeStartupAndPeriodic = queue.RecoveryModeStartupAndPeriodic
+)
 
 const (
 	AlertCorruptMessage         = core.AlertCorruptMessage

@@ -27,6 +27,7 @@ type DelayConsumer struct {
 	lockTTL             time.Duration
 	pollInterval        time.Duration
 	recoveryGracePeriod time.Duration
+	recoveryMode        RecoveryMode
 	internalOpTimeout   time.Duration
 	retryBaseInterval   time.Duration
 
@@ -46,6 +47,7 @@ func NewDelayConsumer(runner core.QueueRunner, opt core.RunnerOption, cfg DelayC
 		lockTTL:             cfg.LockTTL,
 		pollInterval:        cfg.PollInterval,
 		recoveryGracePeriod: cfg.RecoveryGracePeriod,
+		recoveryMode:        cfg.RecoveryMode.Normalize(),
 		internalOpTimeout:   cfg.InternalOpTimeout,
 		retryBaseInterval:   cfg.RetryBaseInterval,
 		logger:              cfg.Logger,
@@ -130,13 +132,16 @@ func (c *DelayConsumer) Start(ctx context.Context) error {
 		go c.work(ctx, i)
 	}
 
-	// 一次性恢复协程
-	c.wg.Add(1)
-	go c.startupRecover(ctx)
-
-	// 定期恢复协程（兜底）
-	c.wg.Add(1)
-	go c.periodicRecover(ctx)
+	if c.recoveryMode.WithStartupRecover() {
+		// 一次性恢复协程
+		c.wg.Add(1)
+		go c.startupRecover(ctx)
+	}
+	if c.recoveryMode.WithPeriodicRecover() {
+		// 定期恢复协程（兜底）
+		c.wg.Add(1)
+		go c.periodicRecover(ctx)
+	}
 
 	c.logger.Infof("taskx: delay[%s] started with %d workers", c.runner.GetName(), c.option.ConsumerCount)
 	return nil
@@ -288,12 +293,21 @@ func (c *DelayConsumer) doRecover(ctx context.Context, label string) {
 		}
 		c.logger.Infof("taskx: delay[%s] %s batch recovered %d messages", c.runner.GetName(), label, recovered)
 	}
-	c.logger.Infof(
-		"taskx: delay[%s] %s recovery finished, recovered %d orphaned messages from processing",
-		c.runner.GetName(),
-		label,
-		totalRecovered,
-	)
+	if totalRecovered > 0 {
+		c.logger.Infof(
+			"taskx: delay[%s] %s recovery finished, recovered %d orphaned messages from processing",
+			c.runner.GetName(),
+			label,
+			totalRecovered,
+		)
+	} else {
+		c.logger.Infof(
+			"taskx: delay[%s] %s recovery finished, recovered %d orphaned messages from processing",
+			c.runner.GetName(),
+			label,
+			totalRecovered,
+		)
+	}
 }
 
 func (c *DelayConsumer) startRecoverRenewLoop(lockKey string, lockTTL time.Duration) (func(), <-chan struct{}) {

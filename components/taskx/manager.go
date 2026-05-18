@@ -802,6 +802,7 @@ func (m *Manager) buildConsumerConfig() queue.ConsumerConfig {
 		Prefix:              m.cfg.KeyPrefix,
 		LockTTL:             m.cfg.LockTTL,
 		RecoveryGracePeriod: m.cfg.RecoveryGracePeriod,
+		RecoveryMode:        m.cfg.RecoveryMode,
 		InternalOpTimeout:   m.cfg.InternalOpTimeout,
 		TraceKey:            m.cfg.TraceContextKey,
 		Logger:              m.cfg.Logger,
@@ -835,6 +836,7 @@ func (m *Manager) checkStartReadyLocked(ctx context.Context) (startEntries, erro
 	if m.cfg.DelayRetryBaseInterval <= 0 {
 		m.cfg.DelayRetryBaseInterval = defaults.DelayRetryBaseInterval
 	}
+	m.cfg.RecoveryMode = m.cfg.RecoveryMode.Normalize()
 	if m.cfg.TimerHeartbeatInterval <= 0 {
 		// 默认让 timer 心跳快于超时阈值，避免低阈值场景误报不健康。
 		m.cfg.TimerHeartbeatInterval = m.cfg.HealthInterval
@@ -861,7 +863,9 @@ func (m *Manager) checkStartReadyLocked(ctx context.Context) (startEntries, erro
 		delay: m.registry.GetDelayRunners(),
 		timer: m.registry.GetTimerTasks(),
 	}
-	if len(entries.event)+len(entries.delay) > 0 && m.cfg.LockDriver == nil {
+	if len(entries.event)+len(entries.delay) > 0 &&
+		m.cfg.RecoveryMode != queue.RecoveryModeNone &&
+		m.cfg.LockDriver == nil {
 		return startEntries{}, fmt.Errorf(
 			"taskx: lock driver not configured for %d registered queue runner(s) (event=%d, delay=%d)",
 			len(entries.event)+len(entries.delay), len(entries.event), len(entries.delay),

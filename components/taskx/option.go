@@ -7,6 +7,7 @@ import (
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/driver"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/queue"
 )
 
 // Option Manager 配置选项
@@ -27,7 +28,8 @@ type ManagerConfig struct {
 	InternalOpTimeout      time.Duration
 	TimerHeartbeatInterval time.Duration
 	RecoveryGracePeriod    time.Duration // processing 中停留超过该时间的消息视为孤儿并恢复（默认 30s）
-	RecoverBatchSize       int64         // 崩溃恢复每批次移动的消息数量
+	RecoveryMode           queue.RecoveryMode
+	RecoverBatchSize       int64 // 崩溃恢复每批次移动的消息数量
 	DefaultTimerTask       core.TimerTaskOption
 	OnAlert                core.AlertFunc // 异常告警回调，nil 时仅记录日志
 	AlertQueueSize         int            // 异常告警内部通道容量，满时丢弃并记录日志
@@ -48,6 +50,7 @@ func defaultConfig() *ManagerConfig {
 		InternalOpTimeout:      defaults.InternalOpTimeout,
 		TimerHeartbeatInterval: 0,
 		RecoveryGracePeriod:    defaults.RecoveryGracePeriod,
+		RecoveryMode:           queue.RecoveryModeStartupOnly,
 		RecoverBatchSize:       defaults.RecoverBatchSize,
 		DefaultTimerTask: core.TimerTaskOption{
 			MaxRetry:          core.IntPtr(0),
@@ -110,6 +113,11 @@ func WithRecoverBatchSize(n int64) Option {
 // WithRecoveryGracePeriod 设置恢复容错时间。processing 中停留超过该时间的消息才会被恢复到 pending。
 func WithRecoveryGracePeriod(d time.Duration) Option {
 	return func(c *ManagerConfig) { c.RecoveryGracePeriod = d }
+}
+
+// WithRecoveryMode 设置队列恢复模式：不恢复 / 仅启动恢复（默认）/ 启动+轮询恢复。
+func WithRecoveryMode(mode queue.RecoveryMode) Option {
+	return func(c *ManagerConfig) { c.RecoveryMode = mode.Normalize() }
 }
 
 func WithDefaultTimerTaskOption(opt core.TimerTaskOption) Option {

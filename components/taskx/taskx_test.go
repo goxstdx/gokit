@@ -1218,9 +1218,10 @@ func TestProcessingCrashRecovery(t *testing.T) {
 	prefix := fmt.Sprintf("test_%d", time.Now().UnixNano())
 	defer cleanKeys(ctx, rdb, prefix)
 
-	// 手动向 processing ZSet 插入一条"超时"消息（score 设为 1 分钟前）
-	processingKey := prefix + ":event:{crash-recover}:processing"
-	pendingKey := prefix + ":event:{crash-recover}:pending"
+	// EventQueue 使用 queue group key（默认组 _default_），
+	// 这里要向默认组 processing 注入孤儿消息，RunnerName 决定路由到哪个 runner。
+	processingKey := prefix + ":event:{_default_}:processing"
+	pendingKey := prefix + ":event:{_default_}:pending"
 
 	env := core.NewEnvelope("orphaned-msg", core.EnvelopeSourceEvent)
 	env.RunnerName = "crash-recover"
@@ -1259,8 +1260,17 @@ func TestProcessingCrashRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 等待 startup recovery 恢复并消费
-	time.Sleep(5 * time.Second)
+	// 等待 startup recovery 恢复并消费（条件等待，避免固定 sleep 引入竞态）
+	waitDeadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(waitDeadline) {
+		if got := received.Load(); got == 1 {
+			pLenNow, _ := rdb.ZCard(ctx, processingKey).Result()
+			if pLenNow == 0 {
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	if err := mgr.Stop(ctx); err != nil {
 		t.Fatal(err)
@@ -1433,7 +1443,13 @@ func TestEventQueueGroupRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	time.Sleep(3 * time.Second)
+	waitDeadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(waitDeadline) {
+		if defaultGroupReceived.Load() == 1 && customGroupReceived.Load() == 1 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	if got := defaultGroupReceived.Load(); got != 1 {
 		t.Fatalf("expected default group runner received 1, got %d", got)

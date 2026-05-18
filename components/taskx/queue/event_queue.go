@@ -29,6 +29,7 @@ type EventConsumer struct {
 	recoveryGracePeriod time.Duration
 	internalOpTimeout   time.Duration
 	popTimeout          time.Duration
+	recoveryMode        RecoveryMode
 
 	wg     sync.WaitGroup
 	cancel context.CancelFunc
@@ -45,6 +46,7 @@ func NewEventConsumer(cfg EventConsumerConfig) *EventConsumer {
 		keys:                cfg.Keys,
 		lockTTL:             cfg.LockTTL,
 		recoveryGracePeriod: cfg.RecoveryGracePeriod,
+		recoveryMode:        cfg.RecoveryMode.Normalize(),
 		internalOpTimeout:   cfg.InternalOpTimeout,
 		popTimeout:          cfg.PopTimeout,
 		logger:              cfg.Logger,
@@ -119,11 +121,14 @@ func (c *EventConsumer) Start(ctx context.Context) error {
 		go c.consume(ctx, i)
 	}
 
-	c.wg.Add(1)
-	go c.startupRecover(ctx)
-
-	c.wg.Add(1)
-	go c.periodicRecover(ctx)
+	if c.recoveryMode.WithStartupRecover() {
+		c.wg.Add(1)
+		go c.startupRecover(ctx)
+	}
+	if c.recoveryMode.WithPeriodicRecover() {
+		c.wg.Add(1)
+		go c.periodicRecover(ctx)
+	}
 
 	c.logger.Infof("taskx: event[%s] started with %d consumers", c.logName(), c.consumerCount)
 	return nil
@@ -221,8 +226,10 @@ func (c *EventConsumer) doRecover(ctx context.Context, label string) {
 			)
 			return
 		}
-		c.logger.Debugf("taskx: event[%s] %s recovering, processingKey=%s, pendingKey=%s, gracePeriod=%v",
-			c.logName(), label, c.keys.Processing, c.keys.Pending, gp)
+		c.logger.Debugf(
+			"taskx: event[%s] %s recovering, processingKey=%s, pendingKey=%s, gracePeriod=%v",
+			c.logName(), label, c.keys.Processing, c.keys.Pending, gp,
+		)
 		recovered, err := c.driver.RecoverProcessing(ctx, c.keys.Processing, c.keys.Pending, gp)
 		if err != nil {
 			c.logger.Warnf("taskx: event[%s] %s recover processing error: %v", c.logName(), label, err)
@@ -234,12 +241,22 @@ func (c *EventConsumer) doRecover(ctx context.Context, label string) {
 		}
 		c.logger.Infof("taskx: event[%s] %s batch recovered %d messages", c.logName(), label, recovered)
 	}
-	c.logger.Infof(
-		"taskx: event[%s] %s recovery finished, recovered %d orphaned messages from processing",
-		c.logName(),
-		label,
-		totalRecovered,
-	)
+
+	if totalRecovered > 0 {
+		c.logger.Infof(
+			"taskx: event[%s] %s recovery finished, recovered %d orphaned messages from processing",
+			c.logName(),
+			label,
+			totalRecovered,
+		)
+	} else {
+		c.logger.Debugf(
+			"taskx: event[%s] %s recovery finished, recovered %d orphaned messages from processing",
+			c.logName(),
+			label,
+			totalRecovered,
+		)
+	}
 }
 
 func (c *EventConsumer) startRecoverRenewLoop(lockKey string, lockTTL time.Duration) (func(), <-chan struct{}) {
@@ -361,12 +378,14 @@ func (c *EventConsumer) safeProcess(ctx context.Context, raw string, id int) {
 	defer func() {
 		if r := recover(); r != nil {
 			c.logger.Errorf("taskx: event[%s][%d] panic in process: %v", c.logName(), id, r)
-			c.alert(core.AlertData{
-				Source:     core.AlertSourceEvent,
-				AlertType:  core.AlertCorruptMessage,
-				RunnerName: c.logName(),
-				Remark:     fmt.Sprintf("panic: %v", r),
-			})
+			c.alert(
+				core.AlertData{
+					Source:     core.AlertSourceEvent,
+					AlertType:  core.AlertCorruptMessage,
+					RunnerName: c.logName(),
+					Remark:     fmt.Sprintf("panic: %v", r),
+				},
+			)
 		}
 	}()
 	c.process(ctx, raw, id)

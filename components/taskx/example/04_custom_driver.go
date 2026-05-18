@@ -21,6 +21,7 @@ func NewCustomDriverManager(registry *taskx.Registry, log logger_factory.Logger)
 		taskx.WithEventQueueDriver(&MyEventQueueDriver{}),
 		taskx.WithDelayQueueDriver(&MyDelayQueueDriver{}),
 		taskx.WithLockDriver(&MyLockDriver{}),
+		taskx.WithRecoveryMode(taskx.RecoveryModeStartupOnly),
 		taskx.WithLogger(log),
 	)
 }
