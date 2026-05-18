@@ -57,6 +57,7 @@ type Logger interface {
 	With(key string, val any) Logger
 	WithField(fields Field) Logger
 	WithFields(fields []Field) Logger
+	WithMapFields(fields map[string]any) Logger
 	WithCtx(ctx context.Context) Logger
 
 	Sync() error

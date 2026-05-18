@@ -191,6 +191,15 @@ func (z *zapLogger) WithFields(fields []Field) Logger {
 	}
 }
 
+func (z *zapLogger) WithMapFields(fields map[string]any) Logger {
+	newL := z.logger.With(toZapFieldsMap(fields)...)
+	return &zapLogger{
+		logger: newL,
+		sugar:  newL.Sugar(),
+		cfg:    z.cfg,
+	}
+}
+
 func (z *zapLogger) WithCtx(ctx context.Context) Logger {
 	newL := z.logger.With(toZapFields(z.cfg.ContextExtractor(ctx))...)
 	return &zapLogger{
@@ -244,6 +253,14 @@ func toZapFields(fields []Field) []zap.Field {
 	zf := make([]zap.Field, 0, len(fields))
 	for _, f := range fields {
 		zf = append(zf, toZapField(f))
+	}
+	return zf
+}
+
+func toZapFieldsMap(fields map[string]any) []zap.Field {
+	zf := make([]zap.Field, 0, len(fields))
+	for k, v := range fields {
+		zf = append(zf, zap.Any(k, v))
 	}
 	return zf
 }
