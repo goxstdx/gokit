@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"go.uber.org/zap"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 )
 
 func TestMain(m *testing.M) {
@@ -32,16 +32,54 @@ func TestAddFunc(t *testing.T) {
 		syscall.Kill(syscall.Getpid(), syscall.SIGINT)
 	}()
 
-	//one.SyncWatch()
+	// one.SyncWatch()
 	one.Watch().Wait()
 
 	fmt.Println("end  ", time.Now())
 }
 
 func TestTrerm(t *testing.T) {
+	l, err := logger_factory.NewExample()
+	if err != nil {
+		panic(err)
+	}
+
 	// graceful quit
-	GetTerminateReceiver().AddDefaultHandler(func() {
-		time.Sleep(200 * time.Millisecond)
-		fmt.Println("exit func")
-	}).SetLogger(zap.NewExample()).SyncWatch()
+	GetTerminateReceiver().AddDefaultHandler(
+		func() {
+			time.Sleep(200 * time.Millisecond)
+			fmt.Println("exit func")
+		},
+	).SetLogger(l).SyncWatch()
+}
+
+func TestQuit(t *testing.T) {
+	l, err := logger_factory.NewExample()
+	if err != nil {
+		panic(err)
+	}
+
+	ti := time.NewTimer(1000 * time.Millisecond)
+
+	go func() {
+		select {
+		case <-ti.C:
+			VoluntaryWithdrawal()
+			fmt.Println("timer expired")
+		}
+	}()
+
+	t.Log("start")
+
+	// graceful quit
+	GetTerminateReceiver().AddDefaultHandler(
+		func() {
+			time.Sleep(200 * time.Millisecond)
+			fmt.Println("exit func")
+		},
+	).SetLogger(l).SyncWatch()
+
+	if !IsStop() {
+		t.Error("IsStop() failed")
+	}
 }

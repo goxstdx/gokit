@@ -86,7 +86,7 @@ func (v *TerminateReceiver) watch() *TerminateReceiver {
 	defer func() {
 		if x := recover(); x != nil {
 			v.log("[TerminateReceiver] [Watch] panic err:%v", x)
-			v.log(tools.FullStack())
+			v.log("[TerminateReceiver] [Watch] recover %v ", tools.FullStack())
 		}
 	}()
 	// TODO 后面可以根据不同的信号执行不同的 heandler for 括起来
@@ -174,4 +174,11 @@ func (v *TerminateReceiver) log(format string, args ...interface{}) {
 // IsStop 用于检测是否收到了Term信号量
 func IsStop() bool {
 	return GetTerminateReceiver().isStop
+}
+
+// IsStop 用于检测是否收到了Term信号量
+func VoluntaryWithdrawal() {
+	if defaultReceiver != nil {
+		defaultReceiver.listenChan <- syscall.SIGTERM
+	}
 }
