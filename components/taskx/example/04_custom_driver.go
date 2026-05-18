@@ -3,16 +3,15 @@ package example
 import (
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/driver"
 )
 
-type MyEventQueueDriver struct{ driver.EventQueueDriver }
-type MyDelayQueueDriver struct{ driver.DelayQueueDriver }
-type MyLockDriver struct{ driver.LockDriver }
+type MyEventQueueDriver struct{ taskx.EventQueueDriver }
+type MyDelayQueueDriver struct{ taskx.DelayQueueDriver }
+type MyLockDriver struct{ taskx.LockDriver }
 
-var _ driver.EventQueueDriver = (*MyEventQueueDriver)(nil)
-var _ driver.DelayQueueDriver = (*MyDelayQueueDriver)(nil)
-var _ driver.LockDriver = (*MyLockDriver)(nil)
+var _ taskx.EventQueueDriver = (*MyEventQueueDriver)(nil)
+var _ taskx.DelayQueueDriver = (*MyDelayQueueDriver)(nil)
+var _ taskx.LockDriver = (*MyLockDriver)(nil)
 
 // NewCustomDriverManager 展示如何注入自定义驱动。
 // 注意：这里只展示接线方式，驱动方法需要由业务自行完整实现。

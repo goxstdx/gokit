@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/driver"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/queue"
@@ -63,7 +64,7 @@ func (p *Producer) PublishEventEnvelope(ctx context.Context, runnerName string, 
 			"taskx/producer: event runner %q not registered, message pushed to dead letter queue",
 			runnerName,
 		)
-		p.logErrorf("%v", errMsg)
+		p.logErrorf(ctx, "%v", errMsg)
 		p.alert(
 			core.AlertData{
 				Source:     core.AlertSourceEvent,
@@ -74,7 +75,7 @@ func (p *Producer) PublishEventEnvelope(ctx context.Context, runnerName string, 
 			},
 		)
 		if pushErr := p.cfg.EventDriver.Push(ctx, keys.Dead, env.Encode()); pushErr != nil {
-			p.logErrorf("taskx/producer: event[%s] push to dead letter failed: %v", runnerName, pushErr)
+			p.logErrorf(ctx, "taskx/producer: event[%s] push to dead letter failed: %v", runnerName, pushErr)
 			return nil, fmt.Errorf("%w; additionally failed to push to dead letter: %v", errMsg, pushErr)
 		}
 		return nil, errMsg
@@ -133,7 +134,7 @@ func (p *Producer) PublishDelayEnvelope(
 			"taskx/producer: delay runner %q not registered, message pushed to dead letter queue",
 			runnerName,
 		)
-		p.logErrorf("%v", errMsg)
+		p.logErrorf(ctx, "%v", errMsg)
 		p.alert(
 			core.AlertData{
 				Source:     core.AlertSourceDelay,
@@ -145,7 +146,7 @@ func (p *Producer) PublishDelayEnvelope(
 		)
 		deadAt := time.Now().UnixMicro()
 		if addErr := p.cfg.DelayDriver.Add(ctx, keys.Dead, env.Encode(), deadAt); addErr != nil {
-			p.logErrorf("taskx/producer: delay[%s] push to dead letter failed: %v", runnerName, addErr)
+			p.logErrorf(ctx, "taskx/producer: delay[%s] push to dead letter failed: %v", runnerName, addErr)
 			return nil, fmt.Errorf("%w; additionally failed to push to dead letter: %v", errMsg, addErr)
 		}
 		return nil, errMsg
@@ -171,9 +172,9 @@ func (p *Producer) isDelayRegistered(runnerName string) bool {
 	return true
 }
 
-func (p *Producer) logErrorf(format string, args ...interface{}) {
+func (p *Producer) logErrorf(ctx context.Context, format string, args ...interface{}) {
 	if p.cfg.Logger != nil {
-		p.cfg.Logger.Errorf(format, args...)
+		p.cfg.Logger.ErrorCtxf(logger_factory.WithCallerSkip(ctx, 1), format, args...)
 	}
 }
 
