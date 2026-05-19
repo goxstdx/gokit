@@ -61,6 +61,7 @@ type Consumer struct {
 	scheduler       TimerScheduler
 	running         bool
 	stopping        bool
+	stopped         bool
 	lifecycleCancel context.CancelFunc
 
 	monitorCancel context.CancelFunc
@@ -107,12 +108,16 @@ func New(registry *Registry, opts ...Option) *Consumer {
 func (c *Consumer) ProducerSnapshot() ProducerSnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	onAlert := c.cfg.OnAlert
+	if c.running && c.alertQueue != nil {
+		onAlert = c.enqueueAlert
+	}
 	return ProducerSnapshot{
 		EventDriver: c.cfg.EventDriver,
 		DelayDriver: c.cfg.DelayDriver,
 		KeyPrefix:   c.cfg.KeyPrefix,
 		Logger:      c.cfg.Logger,
-		OnAlert:     c.cfg.OnAlert,
+		OnAlert:     onAlert,
 	}
 }
 
@@ -198,6 +203,9 @@ func (c *Consumer) Start(ctx context.Context) error {
 	if c.stopping {
 		return fmt.Errorf("taskx: consumer is stopping, cannot start until stop completes")
 	}
+	if c.stopped {
+		return fmt.Errorf("taskx: consumer already stopped permanently, restart is not allowed")
+	}
 	entries, err := c.checkStartReadyLocked(ctx)
 	if err != nil {
 		return err
@@ -266,7 +274,9 @@ func (c *Consumer) Start(ctx context.Context) error {
 	}
 
 	if c.cfg.LockDriver != nil && c.timerFactory != nil {
-		s := c.timerFactory(c.cfg.LockDriver, c.cfg.KeyPrefix, c.cfg)
+		timerCfg := *c.cfg
+		timerCfg.OnAlert = c.enqueueAlert
+		s := c.timerFactory(c.cfg.LockDriver, c.cfg.KeyPrefix, &timerCfg)
 		for _, entry := range entries.timer {
 			opt := entry.Option.WithDefaults(c.cfg.DefaultTimerTask)
 			if err := s.Register(entry.Task, opt); err != nil {
@@ -363,6 +373,9 @@ func (c *Consumer) Stop(ctx context.Context) error {
 	c.cfg.OnHeartbeat = nil
 
 	c.running = false
+	if firstErr == nil {
+		c.stopped = true
+	}
 	c.resetHealthStateLocked()
 	snapCtx, snapCancel := c.internalOpContext(context.Background(), 0)
 	c.refreshHealthSnapshot(snapCtx, false)
@@ -469,7 +482,7 @@ func (c *Consumer) buildConsumerConfig() queue.ConsumerConfig {
 		InternalOpTimeout:   c.cfg.InternalOpTimeout,
 		TraceKey:            c.cfg.TraceContextKey,
 		Logger:              c.cfg.Logger,
-		OnAlert:             c.cfg.OnAlert,
+		OnAlert:             c.enqueueAlert,
 		OnHeartbeat:         c.cfg.OnHeartbeat,
 	}
 }

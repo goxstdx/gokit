@@ -470,6 +470,31 @@ func TestDoubleStartReturnsError(t *testing.T) {
 	}
 }
 
+func TestRestartAfterStopReturnsError(t *testing.T) {
+	reg := NewRegistry()
+	_ = reg.RegisterEventRunner(stubRunner{name: "evt"})
+
+	c := New(
+		reg,
+		WithLogger(testLogger(t)),
+		WithLockDriver(stubLockDriver{}),
+		WithEventQueueDriver(stubEventDriver{}),
+	)
+	c.SetEventConsumerFactory(func(queue.EventConsumerConfig) QueueConsumer {
+		return &stubQueueConsumer{}
+	})
+
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := c.Stop(context.Background()); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if err := c.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "restart is not allowed") {
+		t.Fatalf("expected restart not allowed error, got %v", err)
+	}
+}
+
 func TestExecuteTimerTaskOnceValidation(t *testing.T) {
 	c := New(nil, WithLogger(testLogger(t)))
 

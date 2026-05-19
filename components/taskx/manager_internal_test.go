@@ -282,6 +282,31 @@ func TestStopWithoutLoggerWhenNotRunningDoesNotPanic(t *testing.T) {
 	}
 }
 
+func TestRestartAfterStopReturnsError(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.RegisterEventRunner(internalQueueRunner{name: "evt"}); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewManager(
+		reg,
+		WithLogger(newInternalTestLogger(t)),
+		WithLockDriver(internalLockDriver{}),
+		WithEventQueueDriver(internalEventDriver{}),
+	)
+	if err := mgr.SetDefaultFactories(); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := mgr.Stop(context.Background()); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if err := mgr.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "restart is not allowed") {
+		t.Fatalf("expected restart not allowed error, got %v", err)
+	}
+}
+
 func TestStartFailsWhenRegisteredComponentsAreMissingDependencies(t *testing.T) {
 	log := newInternalTestLogger(t)
 

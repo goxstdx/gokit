@@ -10,7 +10,6 @@ import (
 func (c *Consumer) startAlertDispatcherLocked() {
 	c.alertHandler = c.cfg.OnAlert
 	c.alertQueue = make(chan core.AlertData, c.cfg.AlertQueueSize)
-	c.cfg.OnAlert = c.enqueueAlert
 
 	ctx, cancel := context.WithCancel(context.Background())
 	c.alertCancel = cancel
@@ -80,8 +79,6 @@ func (c *Consumer) drainAndRestoreAlert() {
 			}
 		}
 	}
-
-	c.cfg.OnAlert = c.alertHandler
 	c.alertHandler = nil
 }
 
