@@ -1,6 +1,7 @@
 package taskx
 
 import (
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/consumer"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/driver"
 )
@@ -55,6 +56,12 @@ const (
 	AlertPublishUnregistered    = core.AlertPublishUnregistered
 	AlertListenerUnhealthy      = core.AlertListenerUnhealthy
 )
+
+// 工厂类型从 consumer 包重新导出
+type QueueConsumer = consumer.QueueConsumer
+type EventConsumerFactory = consumer.EventConsumerFactory
+type DelayConsumerFactory = consumer.DelayConsumerFactory
+type TimerSchedulerFactory = consumer.TimerSchedulerFactory
 
 var NewEnvelope = core.NewEnvelope
 var DecodeEnvelope = core.DecodeEnvelope

@@ -239,7 +239,7 @@ func TestSetRegistryFailsWhileRunning(t *testing.T) {
 		WithEventQueueDriver(internalEventDriver{}),
 	)
 	mgr.SetEventConsumerFactory(
-		func(queue.EventConsumerConfig) consumer {
+		func(queue.EventConsumerConfig) QueueConsumer {
 			return &internalConsumer{}
 		},
 	)
@@ -250,7 +250,7 @@ func TestSetRegistryFailsWhileRunning(t *testing.T) {
 
 	if err := mgr.SetRegistry(NewRegistry()); err == nil || !strings.Contains(
 		err.Error(),
-		"cannot set registry while manager is running",
+		"cannot set registry while consumer is running",
 	) {
 		t.Fatalf("expected running set registry error, got %v", err)
 	}
@@ -276,7 +276,7 @@ func TestEmptyRegistryFailsCheckStartReadyAndStart(t *testing.T) {
 }
 
 func TestStopWithoutLoggerWhenNotRunningDoesNotPanic(t *testing.T) {
-	mgr := NewManager(NewRegistry()) // 故意不设置 logger，覆盖未 Start() 的安全停止路径
+	mgr := NewManager(NewRegistry())
 	if err := mgr.Stop(context.Background()); err != nil {
 		t.Fatalf("stop without logger should be no-op, got %v", err)
 	}
@@ -365,7 +365,7 @@ func TestStartFailsWhenRegisteredComponentsAreMissingDependencies(t *testing.T) 
 	}
 }
 
-func TestStartFailureCleansAlertDispatcherAndStartedConsumers(t *testing.T) {
+func TestStartFailureCleansUpAndReportsNotRunning(t *testing.T) {
 	reg := NewRegistry()
 	if err := reg.RegisterEventRunner(internalQueueRunner{name: "first"}); err != nil {
 		t.Fatal(err)
@@ -378,17 +378,16 @@ func TestStartFailureCleansAlertDispatcherAndStartedConsumers(t *testing.T) {
 	}
 
 	var stopped atomic.Int64
-	originalAlert := func(core.AlertData) {}
 	mgr := NewManager(
 		reg,
 		WithLogger(newInternalTestLogger(t)),
 		WithLockDriver(internalLockDriver{}),
 		WithEventQueueDriver(internalEventDriver{}),
-		WithAlertFunc(originalAlert),
+		WithAlertFunc(func(core.AlertData) {}),
 	)
 	var created atomic.Int64
 	mgr.SetEventConsumerFactory(
-		func(queue.EventConsumerConfig) consumer {
+		func(queue.EventConsumerConfig) QueueConsumer {
 			if created.Add(1) == 2 {
 				return &internalConsumer{startErr: errors.New("boom"), stopped: &stopped}
 			}
@@ -399,18 +398,10 @@ func TestStartFailureCleansAlertDispatcherAndStartedConsumers(t *testing.T) {
 	if err := mgr.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("expected start failure, got %v", err)
 	}
-	if mgr.running {
+	if mgr.Running() {
 		t.Fatal("manager should not be running after failed start")
 	}
-	if mgr.alertQueue != nil || mgr.alertCancel != nil || mgr.alertHandler != nil {
-		t.Fatalf(
-			"alert dispatcher not cleaned: queue=%v cancel=%v handler=%v",
-			mgr.alertQueue,
-			mgr.alertCancel,
-			mgr.alertHandler,
-		)
-	}
-	if mgr.cfg.OnAlert == nil {
+	if mgr.Config().OnAlert == nil {
 		t.Fatal("expected original alert handler to be restored")
 	}
 	if got := stopped.Load(); got != 1 {
@@ -454,7 +445,7 @@ func TestEventPollIntervalConfigIsPassedToConsumer(t *testing.T) {
 		WithEventQueueDriver(drv),
 		WithEventPollInterval(75*time.Millisecond),
 	)
-	mgr.SetEventConsumerFactory(newEventConsumerFactory)
+	mgr.SetDefaultFactories()
 	if err := mgr.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -485,7 +476,7 @@ func TestDelayRetryBaseIntervalConfigControlsFallbackSchedule(t *testing.T) {
 		WithPollInterval(10*time.Millisecond),
 		WithDelayRetryBaseInterval(2*time.Second),
 	)
-	mgr.SetDelayConsumerFactory(newDelayConsumerFactory)
+	mgr.SetDefaultFactories()
 	before := time.Now().UnixMicro()
 	if err := mgr.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -507,124 +498,6 @@ func TestDelayRetryBaseIntervalConfigControlsFallbackSchedule(t *testing.T) {
 	}
 }
 
-func TestStopAlertDispatcherDrainDoesNotInvokeExternalHandler(t *testing.T) {
-	mgr := NewManager(nil, WithLogger(newInternalTestLogger(t)))
-
-	var handled atomic.Int64
-	originalAlert := func(core.AlertData) { handled.Add(1) }
-
-	// 构造“已停止但仍有待 drain 告警”的状态：
-	// alertQueue 中预置 1 条消息，stop 过程中应只记录并丢弃，不再调用外部 handler。
-	mgr.cfg.OnAlert = originalAlert
-	mgr.alertHandler = originalAlert
-	mgr.alertQueue = make(chan core.AlertData, 1)
-	mgr.alertQueue <- core.AlertData{
-		Source:     core.AlertSourceEvent,
-		AlertType:  core.AlertCorruptMessage,
-		RunnerName: "evt",
-	}
-
-	if err := mgr.stopAlertDispatcherWithContextLocked(context.Background()); err != nil {
-		t.Fatalf("stop alert dispatcher: %v", err)
-	}
-
-	if got := handled.Load(); got != 0 {
-		t.Fatalf("drained alerts should not invoke external handler, got handled=%d", got)
-	}
-	if mgr.alertQueue != nil {
-		t.Fatal("expected alert queue to be cleared after stop")
-	}
-	if mgr.cfg.OnAlert == nil {
-		t.Fatal("expected original alert handler to be restored")
-	}
-}
-
-func TestCheckHealthAlertsFiresOnThreshold(t *testing.T) {
-	reg := NewRegistry()
-	if err := reg.RegisterEventRunner(internalQueueRunner{name: "evt"}); err != nil {
-		t.Fatal(err)
-	}
-
-	alertCh := make(chan core.AlertData, 10)
-	mgr := NewManager(
-		reg,
-		WithLogger(newInternalTestLogger(t)),
-		WithLockDriver(internalLockDriver{}),
-		WithEventQueueDriver(internalEventDriver{}),
-		WithAlertFunc(
-			func(data core.AlertData) {
-				alertCh <- data
-			},
-		),
-		WithHealthAlertThreshold(3),
-	)
-	mgr.healthFailCounts = make(map[string]int)
-	mgr.alertHandler = mgr.cfg.OnAlert
-	mgr.alertQueue = make(chan core.AlertData, 10)
-	go func() {
-		for d := range mgr.alertQueue {
-			if mgr.alertHandler != nil {
-				mgr.alertHandler(d)
-			}
-		}
-	}()
-
-	unhealthySnap := ManagerHealthSnapshot{
-		Running: true,
-		Event:   map[string]QueueListenerHealth{"evt": {Alive: false}},
-		Delay:   map[string]QueueListenerHealth{},
-		Timer:   TimerListenerHealth{Alive: true},
-	}
-
-	// 前两次不触发
-	mgr.checkHealthAlerts(unhealthySnap)
-	mgr.checkHealthAlerts(unhealthySnap)
-	select {
-	case <-alertCh:
-		t.Fatal("should not fire alert before threshold")
-	default:
-	}
-
-	// 第三次触发
-	mgr.checkHealthAlerts(unhealthySnap)
-	select {
-	case alert := <-alertCh:
-		if alert.AlertType != core.AlertListenerUnhealthy {
-			t.Fatalf("expected AlertListenerUnhealthy, got %s", alert.AlertType)
-		}
-		if alert.RunnerName != "evt" {
-			t.Fatalf("expected runner name 'evt', got %s", alert.RunnerName)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for alert on threshold")
-	}
-
-	// 第四次不再重复触发
-	mgr.checkHealthAlerts(unhealthySnap)
-	select {
-	case <-alertCh:
-		t.Fatal("should not fire alert repeatedly after threshold")
-	default:
-	}
-
-	// 恢复后计数清零
-	healthySnap := ManagerHealthSnapshot{
-		Running: true,
-		Event:   map[string]QueueListenerHealth{"evt": {Alive: true}},
-		Delay:   map[string]QueueListenerHealth{},
-		Timer:   TimerListenerHealth{Alive: true},
-	}
-	mgr.checkHealthAlerts(healthySnap)
-	mgr.healthMu.RLock()
-	count := mgr.healthFailCounts["event:evt"]
-	mgr.healthMu.RUnlock()
-	if count != 0 {
-		t.Fatalf("expected fail count reset to 0 after recovery, got %d", count)
-	}
-
-	close(mgr.alertQueue)
-}
-
 func TestResolveEventGroupNameStrictReturnsFalseForUnregistered(t *testing.T) {
 	reg := NewRegistry()
 	if err := reg.RegisterEventRunner(
@@ -635,9 +508,9 @@ func TestResolveEventGroupNameStrictReturnsFalseForUnregistered(t *testing.T) {
 	}
 
 	mgr := NewManager(reg, WithLogger(newInternalTestLogger(t)))
+	resolver := mgr.EventGroupResolver()
 
-	// 已注册 → 返回 group 和 true
-	group, ok := mgr.resolveEventGroupNameStrict("registered-evt")
+	group, ok := resolver("registered-evt")
 	if !ok {
 		t.Fatal("expected registered runner to return true")
 	}
@@ -645,8 +518,7 @@ func TestResolveEventGroupNameStrictReturnsFalseForUnregistered(t *testing.T) {
 		t.Fatalf("expected group 'my-group', got %q", group)
 	}
 
-	// 未注册 → 返回 false
-	_, ok = mgr.resolveEventGroupNameStrict("not-exist")
+	_, ok = resolver("not-exist")
 	if ok {
 		t.Fatal("expected unregistered runner to return false")
 	}

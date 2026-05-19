@@ -8,37 +8,27 @@ import (
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/producer"
 )
 
-// rebuildProducer 根据当前 cfg/registry 重建内部 Producer。
-// 在 NewManager 和 Start（alert dispatcher 就绪后）各调用一次。
-func (m *Manager) rebuildProducer() {
-	m.producer = producer.New(producer.Config{
-		EventDriver:       m.cfg.EventDriver,
-		DelayDriver:       m.cfg.DelayDriver,
-		KeyPrefix:         m.cfg.KeyPrefix,
-		Logger:            m.cfg.Logger,
-		OnAlert:           m.enqueueAlert,
-		ResolveEventGroup: m.resolveEventGroupNameStrict,
-		IsDelayRegistered: m.isDelayRegistered,
+func (m *Manager) buildProducer() *producer.Producer {
+	cfg := m.Consumer.Config()
+	return producer.New(producer.Config{
+		EventDriver:       cfg.EventDriver,
+		DelayDriver:       cfg.DelayDriver,
+		KeyPrefix:         cfg.KeyPrefix,
+		Logger:            cfg.Logger,
+		OnAlert:           cfg.OnAlert,
+		ResolveEventGroup: m.Consumer.EventGroupResolver(),
+		IsDelayRegistered: m.Consumer.DelayRegisteredChecker(),
 	})
 }
 
-func (m *Manager) isDelayRegistered(runnerName string) bool {
-	_, ok := m.registry.GetDelayRunners()[runnerName]
-	return ok
+func (m *Manager) rebuildProducer() {
+	m.producer = m.buildProducer()
 }
 
 // NewProducer 基于当前 Manager 的配置创建一个独立的 Producer 副本。
 // 适用于需要将 Producer 传递给其他模块使用的场景。
 func (m *Manager) NewProducer() *producer.Producer {
-	return producer.New(producer.Config{
-		EventDriver:       m.cfg.EventDriver,
-		DelayDriver:       m.cfg.DelayDriver,
-		KeyPrefix:         m.cfg.KeyPrefix,
-		Logger:            m.cfg.Logger,
-		OnAlert:           m.enqueueAlert,
-		ResolveEventGroup: m.resolveEventGroupNameStrict,
-		IsDelayRegistered: m.isDelayRegistered,
-	})
+	return m.buildProducer()
 }
 
 // --- Publish 方法委托给内部 Producer ---

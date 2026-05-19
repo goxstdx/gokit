@@ -13,7 +13,6 @@ import (
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/consumer"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/producer"
 )
 
@@ -56,7 +55,7 @@ func ProducerFromCtx(ctx context.Context) *producer.Producer {
 }
 
 // ConsumerWithProducerExample 展示"消费端也推送"场景：
-// Consumer 和 Producer 独立创建，共享同一套 Redis + KeyPrefix。
+// 使用 Manager 同时管理消费与推送能力。
 // Consumer 消费任务后，通过 Producer 发布新的延迟任务。
 func ConsumerWithProducerExample() {
 	log, _ := logger_factory.NewLogger(
@@ -69,21 +68,21 @@ func ConsumerWithProducerExample() {
 
 	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
 
-	// 1. 创建 Consumer（注册并启动消费）
-	reg := consumer.NewRegistry()
+	// 1. 创建 Manager（注册并启动消费）
+	reg := taskx.NewRegistry()
 	_ = reg.RegisterEventRunner(&OrderPaymentRunner{})
-	_ = reg.RegisterDelayRunner(&OrderNotifyRunner{}, consumer.RunnerOption{MaxRetry: 3})
+	_ = reg.RegisterDelayRunner(&OrderNotifyRunner{}, taskx.RunnerOption{MaxRetry: 3})
 
-	c := consumer.NewRedisConsumer(rdb, reg,
-		consumer.WithKeyPrefix("myapp"),
-		consumer.WithLogger(log),
+	m := taskx.NewRedisManager(rdb, reg,
+		taskx.WithKeyPrefix("myapp"),
+		taskx.WithLogger(log),
 	)
 
-	// 2. 从 Consumer 创建 Producer（自动复用配置 + 注册中心信息）
-	p := c.NewProducer()
+	// 2. 从 Manager 创建 Producer（自动复用配置 + 注册中心信息）
+	p := m.NewProducer()
 
 	ctx := context.Background()
-	if err := c.Start(ctx); err != nil {
+	if err := m.Start(ctx); err != nil {
 		panic(err)
 	}
 
@@ -94,5 +93,5 @@ func ConsumerWithProducerExample() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	_ = c.Stop(ctx)
+	_ = m.Stop(ctx)
 }

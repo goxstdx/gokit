@@ -2,86 +2,515 @@ package consumer
 
 import (
 	"context"
-
-	"github.com/redis/go-redis/v9"
+	"fmt"
+	"sync"
+	"time"
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/core"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/producer"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/defaults"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/driver"
+	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/queue"
 )
 
-// HealthSnapshot / QueueListenerHealth / TimerListenerHealth 与 taskx.Manager 同源。
-type HealthSnapshot = core.HealthSnapshot
-type QueueListenerHealth = core.QueueListenerHealth
-type TimerListenerHealth = core.TimerListenerHealth
-
-// managerFacade 定义 Consumer 需要的 Manager 接口，避免直接暴露包级类型。
-type managerFacade interface {
+// QueueConsumer 内部消费器接口（导出供工厂模式和测试使用）
+type QueueConsumer interface {
 	Start(ctx context.Context) error
-	Stop(ctx context.Context) error
-	HealthSnapshot() HealthSnapshot
-	HealthOK() bool
-	Config() *Config
-	RecoverEventDead(ctx context.Context, runnerName string, count int64) (int64, error)
-	RecoverDelayDead(ctx context.Context, runnerName string, count int64) (int64, error)
-	ExecuteTimerTaskOnce(ctx context.Context, req core.TimerExecuteRequest) (core.RunnerFuncResult, error)
-	NewProducer() *producer.Producer
+	Stop()
+	BuildKey() string
 }
 
-// Consumer 任务消费者，管理 EventQueue / DelayQueue / TimerTask 的消费生命周期。
-// 内部委托给已验证的 taskx.Manager 实现，自身仅为薄包装。
+// TimerScheduler 内部定时任务调度器接口（导出供工厂模式和测试使用）
+type TimerScheduler interface {
+	Register(task core.TimerTaskRunner, opt core.TimerTaskOption) error
+	Start()
+	Stop() context.Context
+}
+
+// TimerSchedulerFactory 定时任务调度器工厂函数
+type TimerSchedulerFactory func(lk driver.LockDriver, prefix string, cfg *Config) TimerScheduler
+
+// EventConsumerFactory 事件队列消费器工厂函数（按组创建）
+type EventConsumerFactory func(cfg queue.EventConsumerConfig) QueueConsumer
+
+// DelayConsumerFactory 延迟队列消费器工厂函数
+type DelayConsumerFactory func(
+	runner core.QueueRunner, opt core.RunnerOption,
+	cfg queue.DelayConsumerConfig,
+) QueueConsumer
+
+// Consumer 任务消费者，管理 EventQueue、DelayQueue、TimerTask 的消费生命周期。
 type Consumer struct {
-	mgr      managerFacade
+	cfg      *Config
 	registry *Registry
+
+	eventFactory EventConsumerFactory
+	delayFactory DelayConsumerFactory
+	timerFactory TimerSchedulerFactory
+
+	mu              sync.Mutex
+	consumers       []QueueConsumer
+	scheduler       TimerScheduler
+	running         bool
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
+
+	monitorCancel context.CancelFunc
+	monitorWG     sync.WaitGroup
+	alertCancel   context.CancelFunc
+	alertWG       sync.WaitGroup
+	alertQueue    chan core.AlertData
+	alertHandler  core.AlertFunc
+
+	healthMu         sync.RWMutex
+	eventBeatAt      map[string]time.Time
+	delayBeatAt      map[string]time.Time
+	timerBeatAt      time.Time
+	healthSnapshot   HealthSnapshot
+	healthFailCounts map[string]int
+}
+
+type startEntries struct {
+	event map[string]*EventEntry
+	delay map[string]*DelayEntry
+	timer map[string]*TimerEntry
 }
 
 // New 创建 Consumer。
-// 内部创建 taskx.Manager 并设置默认工厂；opts 与 taskx.NewManager 完全相同。
 func New(registry *Registry, opts ...Option) *Consumer {
-	mgr := bootstrap(registry, opts...)
-	return &Consumer{mgr: mgr, registry: registry}
+	cfg := core.DefaultConfig()
+	for _, o := range opts {
+		o(cfg)
+	}
+	if registry == nil {
+		registry = NewRegistry()
+	}
+
+	return &Consumer{
+		cfg:              cfg,
+		registry:         registry,
+		eventBeatAt:      make(map[string]time.Time),
+		delayBeatAt:      make(map[string]time.Time),
+		healthFailCounts: make(map[string]int),
+	}
 }
-
-// NewRedisConsumer 快捷构造：传入 redis.Cmdable 自动创建 Redis 驱动并组装 Consumer。
-func NewRedisConsumer(rdb redis.Cmdable, registry *Registry, opts ...Option) *Consumer {
-	mgr := bootstrapRedis(rdb, registry, opts...)
-	return &Consumer{mgr: mgr, registry: registry}
-}
-
-// Start 启动所有已注册的队列消费者和定时任务。
-func (c *Consumer) Start(ctx context.Context) error { return c.mgr.Start(ctx) }
-
-// Stop 优雅停止所有队列消费者和定时任务。
-func (c *Consumer) Stop(ctx context.Context) error { return c.mgr.Stop(ctx) }
-
-// GetHealthSnapshot 返回最近一次健康快照。
-func (c *Consumer) GetHealthSnapshot() HealthSnapshot { return c.mgr.HealthSnapshot() }
-
-// HealthOK 返回消费链路是否健康。
-func (c *Consumer) HealthOK() bool { return c.mgr.HealthOK() }
 
 // Config 获取消费者配置
-func (c *Consumer) Config() *Config { return c.mgr.Config() }
+func (c *Consumer) Config() *Config {
+	return c.cfg
+}
 
 // Registry 获取注册中心
-func (c *Consumer) Registry() *Registry { return c.registry }
-
-// RecoverEventDead 从事件队列死信中恢复消息，重置重试计数。
-func (c *Consumer) RecoverEventDead(ctx context.Context, runnerName string, count int64) (int64, error) {
-	return c.mgr.RecoverEventDead(ctx, runnerName, count)
+func (c *Consumer) Registry() *Registry {
+	c.ensureRegistryLocked()
+	return c.registry
 }
 
-// RecoverDelayDead 从延迟队列死信中恢复消息，重置重试计数。
-func (c *Consumer) RecoverDelayDead(ctx context.Context, runnerName string, count int64) (int64, error) {
-	return c.mgr.RecoverDelayDead(ctx, runnerName, count)
+// SetRegistry 设置注册中心（仅允许在未运行状态下设置）。
+func (c *Consumer) SetRegistry(registry *Registry) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.running {
+		return fmt.Errorf("taskx: cannot set registry while consumer is running")
+	}
+	if registry == nil {
+		registry = NewRegistry()
+	}
+	c.registry = registry
+	return nil
 }
 
-// ExecuteTimerTaskOnce 按任务名手动执行一次定时任务。
-func (c *Consumer) ExecuteTimerTaskOnce(ctx context.Context, req core.TimerExecuteRequest) (core.RunnerFuncResult, error) {
-	return c.mgr.ExecuteTimerTaskOnce(ctx, req)
+// SetEventConsumerFactory 设置事件队列消费器工厂
+func (c *Consumer) SetEventConsumerFactory(f EventConsumerFactory) {
+	c.eventFactory = f
 }
 
-// NewProducer 基于当前 Consumer 的配置创建一个 Producer 实例。
-// 适用于消费端同时需要生产消息的场景。
-func (c *Consumer) NewProducer() *producer.Producer {
-	return c.mgr.NewProducer()
+// SetDelayConsumerFactory 设置延迟队列消费器工厂
+func (c *Consumer) SetDelayConsumerFactory(f DelayConsumerFactory) {
+	c.delayFactory = f
+}
+
+// SetTimerSchedulerFactory 设置定时任务调度器工厂
+func (c *Consumer) SetTimerSchedulerFactory(f TimerSchedulerFactory) {
+	c.timerFactory = f
+}
+
+// Running 返回是否正在运行
+func (c *Consumer) Running() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.running
+}
+
+// CheckStartReady 校验当前配置是否满足启动条件。
+func (c *Consumer) CheckStartReady(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, err := c.checkStartReadyLocked(ctx)
+	return err
+}
+
+// Start 启动所有已注册的队列消费者和定时任务
+func (c *Consumer) Start(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ensureRegistryLocked()
+
+	if c.running {
+		return fmt.Errorf("taskx: consumer already running")
+	}
+	entries, err := c.checkStartReadyLocked(ctx)
+	if err != nil {
+		return err
+	}
+
+	c.lifecycleCtx, c.lifecycleCancel = context.WithCancel(context.Background())
+
+	c.startAlertDispatcherLocked()
+	startSucceeded := false
+	defer func() {
+		if !startSucceeded {
+			c.cleanupStartFailureLocked()
+		}
+	}()
+
+	// 启动 EventQueue 消费者（按组聚合）
+	if c.cfg.EventDriver != nil && c.eventFactory != nil {
+		baseCfg := c.buildConsumerConfig()
+		groups := c.groupEventEntries(entries.event)
+		for groupName, groupEntries := range groups {
+			runners := make(map[string]queue.EventRunnerEntry, len(groupEntries))
+			maxConsumer := 1
+			for _, entry := range groupEntries {
+				runners[entry.Runner.GetName()] = queue.EventRunnerEntry{
+					Runner: entry.Runner,
+					Option: entry.Option,
+				}
+				if entry.Option.ConsumerCount > maxConsumer {
+					maxConsumer = entry.Option.ConsumerCount
+				}
+			}
+			ecfg := queue.EventConsumerConfig{
+				ConsumerConfig: baseCfg,
+				Driver:         c.cfg.EventDriver,
+				PopTimeout:     c.cfg.EventPollInterval,
+				Keys:           queue.NewQueueKeySet(c.cfg.KeyPrefix, "event", groupName),
+				Runners:        runners,
+				ConsumerCount:  maxConsumer,
+			}
+			qc := c.eventFactory(ecfg)
+			if err = qc.Start(c.lifecycleCtx); err != nil {
+				return fmt.Errorf("taskx: start event group[%s]: %w", groupName, err)
+			}
+			c.consumers = append(c.consumers, qc)
+		}
+	}
+
+	// 启动 DelayQueue 消费者
+	if c.cfg.DelayDriver != nil && c.delayFactory != nil {
+		baseCfg := c.buildConsumerConfig()
+		for _, entry := range entries.delay {
+			dcfg := queue.DelayConsumerConfig{
+				ConsumerConfig:    baseCfg,
+				Driver:            c.cfg.DelayDriver,
+				PollInterval:      c.cfg.PollInterval,
+				RetryBaseInterval: c.cfg.DelayRetryBaseInterval,
+				Keys:              queue.NewQueueKeySet(c.cfg.KeyPrefix, "delay", entry.Runner.GetName()),
+			}
+			qc := c.delayFactory(entry.Runner, entry.Option, dcfg)
+			if err := qc.Start(c.lifecycleCtx); err != nil {
+				return fmt.Errorf("taskx: start delay[%s]: %w", entry.Runner.GetName(), err)
+			}
+			c.consumers = append(c.consumers, qc)
+		}
+	}
+
+	// 启动 TimerTask
+	if c.cfg.LockDriver != nil && c.timerFactory != nil {
+		s := c.timerFactory(c.cfg.LockDriver, c.cfg.KeyPrefix, c.cfg)
+		for _, entry := range entries.timer {
+			opt := entry.Option.WithDefaults(c.cfg.DefaultTimerTask)
+			if err := s.Register(entry.Task, opt); err != nil {
+				return fmt.Errorf("taskx: register timer[%s]: %w", entry.Task.GetName(), err)
+			}
+		}
+		s.Start()
+		c.scheduler = s
+	}
+
+	c.running = true
+	snapCtx, snapCancel := c.internalOpContext(context.Background(), 0)
+	c.refreshHealthSnapshot(snapCtx, true)
+	snapCancel()
+	c.startMonitorLocked()
+	c.cfg.Logger.Infof("taskx: consumer started")
+	startSucceeded = true
+	return nil
+}
+
+// Stop 优雅停止所有队列消费者和定时任务。
+func (c *Consumer) Stop(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ensureRegistryLocked()
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if !c.running {
+		if c.cfg.Logger != nil {
+			c.cfg.Logger.Infof("taskx: consumer stop skipped, already stopped")
+		}
+		return nil
+	}
+	if c.cfg.Logger == nil {
+		return fmt.Errorf("taskx: logger is required, use WithLogger() to set")
+	}
+	c.cfg.Logger.Infof("taskx: consumer stopping")
+
+	if c.monitorCancel != nil {
+		c.monitorCancel()
+		c.monitorCancel = nil
+	}
+	if err := waitWithContext(ctx, c.monitorWG.Wait); err != nil {
+		c.cfg.Logger.Errorf("taskx: consumer stop failed while waiting monitor: %v", err)
+		return fmt.Errorf("taskx: wait monitor stop: %w", err)
+	}
+	c.cfg.Logger.Infof("taskx: monitor stopped")
+
+	if c.scheduler != nil {
+		stopCtx := c.scheduler.Stop()
+		select {
+		case <-stopCtx.Done():
+			c.cfg.Logger.Infof("taskx: timer scheduler stopped")
+		case <-ctx.Done():
+			c.cfg.Logger.Errorf("taskx: consumer stop timeout while waiting timer stop: %v", ctx.Err())
+			return fmt.Errorf("taskx: wait timer stop: %w", ctx.Err())
+		}
+		c.scheduler = nil
+	}
+
+	if c.lifecycleCancel != nil {
+		c.lifecycleCancel()
+		c.lifecycleCancel = nil
+		c.cfg.Logger.Infof("taskx: lifecycle context cancelled, waiting consumers to exit")
+	}
+
+	if err := c.stopConsumersWithContextLocked(ctx); err != nil {
+		c.cfg.Logger.Errorf("taskx: consumer stop failed while stopping consumers: %v", err)
+		return err
+	}
+	c.cfg.Logger.Infof("taskx: all consumers stopped")
+
+	if err := c.stopAlertDispatcherWithContextLocked(ctx); err != nil {
+		c.cfg.Logger.Errorf("taskx: consumer stop failed while stopping alert dispatcher: %v", err)
+		return err
+	}
+	c.cfg.Logger.Infof("taskx: alert dispatcher stopped")
+	c.cfg.OnHeartbeat = nil
+
+	c.running = false
+	snapCtx, snapCancel := c.internalOpContext(context.Background(), 0)
+	c.refreshHealthSnapshot(snapCtx, false)
+	snapCancel()
+	c.cfg.Logger.Infof("taskx: consumer stopped")
+	return nil
+}
+
+func (c *Consumer) stopConsumersLocked() {
+	for _, qc := range c.consumers {
+		qc.Stop()
+	}
+	c.consumers = nil
+}
+
+func (c *Consumer) cleanupStartFailureLocked() {
+	if c.lifecycleCancel != nil {
+		c.lifecycleCancel()
+		c.lifecycleCancel = nil
+	}
+	if c.scheduler != nil {
+		stopCtx := c.scheduler.Stop()
+		<-stopCtx.Done()
+		c.scheduler = nil
+	}
+	c.stopConsumersLocked()
+	c.stopAlertDispatcherLocked()
+	c.cfg.OnHeartbeat = nil
+	c.running = false
+}
+
+func (c *Consumer) stopConsumersWithContextLocked(ctx context.Context) error {
+	for i, qc := range c.consumers {
+		if err := waitWithContext(ctx, qc.Stop); err != nil {
+			return fmt.Errorf("taskx: stop consumer[%d]: %w", i, err)
+		}
+		c.cfg.Logger.Infof("taskx: consumer[%d] stopped", i)
+	}
+	c.consumers = nil
+	return nil
+}
+
+func (c *Consumer) ensureRegistryLocked() {
+	if c.registry == nil {
+		c.registry = NewRegistry()
+	}
+}
+
+func waitWithContext(ctx context.Context, fn func()) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *Consumer) internalOpContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = c.cfg.InternalOpTimeout
+	}
+	if timeout <= 0 {
+		timeout = defaults.InternalOpTimeout
+	}
+	return context.WithTimeout(parent, timeout)
+}
+
+func (c *Consumer) buildConsumerConfig() queue.ConsumerConfig {
+	return queue.ConsumerConfig{
+		Lock:                c.cfg.LockDriver,
+		Prefix:              c.cfg.KeyPrefix,
+		LockTTL:             c.cfg.LockTTL,
+		RecoveryGracePeriod: c.cfg.RecoveryGracePeriod,
+		RecoveryMode:        c.cfg.RecoveryMode,
+		InternalOpTimeout:   c.cfg.InternalOpTimeout,
+		TraceKey:            c.cfg.TraceContextKey,
+		Logger:              c.cfg.Logger,
+		OnAlert:             c.cfg.OnAlert,
+		OnHeartbeat:         c.cfg.OnHeartbeat,
+	}
+}
+
+func (c *Consumer) checkStartReadyLocked(ctx context.Context) (startEntries, error) {
+	c.ensureRegistryLocked()
+	if c.cfg.Logger == nil {
+		return startEntries{}, fmt.Errorf("taskx: logger is required, use WithLogger() to set")
+	}
+
+	if c.registry == nil {
+		return startEntries{}, fmt.Errorf("taskx: registry is required")
+	}
+	if !c.registry.IsHasRunner() {
+		return startEntries{}, fmt.Errorf("taskx: at least one runner/task must be registered")
+	}
+
+	if c.cfg.HealthInterval <= 0 {
+		c.cfg.HealthInterval = defaults.HealthInterval
+	}
+	if c.cfg.HealthBeatTimeout <= 0 {
+		c.cfg.HealthBeatTimeout = defaults.HealthBeatTimeout
+	}
+	if c.cfg.EventPollInterval <= 0 {
+		c.cfg.EventPollInterval = defaults.EventPopTimeout
+	}
+	if c.cfg.DelayRetryBaseInterval <= 0 {
+		c.cfg.DelayRetryBaseInterval = defaults.DelayRetryBaseInterval
+	}
+	c.cfg.RecoveryMode = c.cfg.RecoveryMode.Normalize()
+	if c.cfg.TimerHeartbeatInterval <= 0 {
+		c.cfg.TimerHeartbeatInterval = c.cfg.HealthInterval
+		if hb := c.cfg.HealthBeatTimeout / 2; hb > 0 && (c.cfg.TimerHeartbeatInterval <= 0 || hb < c.cfg.TimerHeartbeatInterval) {
+			c.cfg.TimerHeartbeatInterval = hb
+		}
+		if c.cfg.TimerHeartbeatInterval <= 0 {
+			c.cfg.TimerHeartbeatInterval = defaults.TimerHeartbeatFallback
+		}
+		if c.cfg.TimerHeartbeatInterval < defaults.MinTimerHeartbeat {
+			c.cfg.TimerHeartbeatInterval = defaults.MinTimerHeartbeat
+		}
+	}
+	if c.cfg.AlertQueueSize <= 0 {
+		c.cfg.AlertQueueSize = 1024
+	}
+	if c.cfg.HealthAlertThreshold < 0 {
+		c.cfg.HealthAlertThreshold = defaults.HealthAlertThreshold
+	}
+	c.cfg.OnHeartbeat = c.recordHeartbeat
+
+	entries := startEntries{
+		event: c.registry.GetEventRunners(),
+		delay: c.registry.GetDelayRunners(),
+		timer: c.registry.GetTimerTasks(),
+	}
+	if len(entries.event)+len(entries.delay) > 0 &&
+		c.cfg.RecoveryMode != queue.RecoveryModeNone &&
+		c.cfg.LockDriver == nil {
+		return startEntries{}, fmt.Errorf(
+			"taskx: lock driver not configured for %d registered queue runner(s) (event=%d, delay=%d)",
+			len(entries.event)+len(entries.delay), len(entries.event), len(entries.delay),
+		)
+	}
+	if len(entries.event) > 0 {
+		if c.cfg.EventDriver == nil {
+			return startEntries{}, fmt.Errorf(
+				"taskx: event queue driver not configured for %d registered event runner(s)",
+				len(entries.event),
+			)
+		}
+		if c.eventFactory == nil {
+			return startEntries{}, fmt.Errorf(
+				"taskx: event consumer factory not configured for %d registered event runner(s)",
+				len(entries.event),
+			)
+		}
+	}
+	if len(entries.delay) > 0 {
+		if c.cfg.DelayDriver == nil {
+			return startEntries{}, fmt.Errorf(
+				"taskx: delay queue driver not configured for %d registered delay runner(s)",
+				len(entries.delay),
+			)
+		}
+		if c.delayFactory == nil {
+			return startEntries{}, fmt.Errorf(
+				"taskx: delay consumer factory not configured for %d registered delay runner(s)",
+				len(entries.delay),
+			)
+		}
+	}
+	if len(entries.timer) > 0 {
+		if c.cfg.LockDriver == nil {
+			return startEntries{}, fmt.Errorf(
+				"taskx: lock driver not configured for %d registered timer task(s)",
+				len(entries.timer),
+			)
+		}
+		if c.timerFactory == nil {
+			return startEntries{}, fmt.Errorf(
+				"taskx: timer scheduler factory not configured for %d registered timer task(s)",
+				len(entries.timer),
+			)
+		}
+	}
+
+	type versionChecker interface {
+		CheckVersion(ctx context.Context) error
+	}
+	if v, ok := c.cfg.EventDriver.(versionChecker); ok {
+		if err := v.CheckVersion(ctx); err != nil {
+			return startEntries{}, err
+		}
+	}
+	return entries, nil
 }
