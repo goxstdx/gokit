@@ -22,11 +22,22 @@ func (m *Manager) buildProducer() *producer.Producer {
 }
 
 func (m *Manager) rebuildProducer() {
-	m.producer = m.buildProducer()
+	p := m.buildProducer()
+	m.pmu.Lock()
+	m.producer = p
+	m.pmu.Unlock()
+}
+
+func (m *Manager) getProducer() *producer.Producer {
+	m.pmu.RLock()
+	p := m.producer
+	m.pmu.RUnlock()
+	return p
 }
 
 // NewProducer 基于当前 Manager 的配置创建一个独立的 Producer 副本。
-// 适用于需要将 Producer 传递给其他模块使用的场景。
+// 注意：返回的 Producer 是快照，后续 Start/Stop 不会影响已创建的实例。
+// 建议在 Start 之后调用，以获得与消费侧一致的告警路径。
 func (m *Manager) NewProducer() *producer.Producer {
 	return m.buildProducer()
 }
@@ -35,32 +46,32 @@ func (m *Manager) NewProducer() *producer.Producer {
 
 // PublishEvent 发布事件到 EventQueue，并返回创建的 Envelope。
 func (m *Manager) PublishEvent(ctx context.Context, runner core.QueueRunner) (*core.Envelope, error) {
-	return m.producer.PublishEvent(ctx, runner)
+	return m.getProducer().PublishEvent(ctx, runner)
 }
 
 // PublishEventPayload 直接将 payload 包装为新消息并发布到 EventQueue。
 func (m *Manager) PublishEventPayload(ctx context.Context, runnerName string, payload string) (*core.Envelope, error) {
-	return m.producer.PublishEventPayload(ctx, runnerName, payload)
+	return m.getProducer().PublishEventPayload(ctx, runnerName, payload)
 }
 
 // PublishEventEnvelope 将指定 Envelope 发布到 EventQueue。
 // 若 runnerName 未在 Registry 中注册，消息将被推入死信队列并触发告警。
 func (m *Manager) PublishEventEnvelope(ctx context.Context, runnerName string, env *core.Envelope) (*core.Envelope, error) {
-	return m.producer.PublishEventEnvelope(ctx, runnerName, env)
+	return m.getProducer().PublishEventEnvelope(ctx, runnerName, env)
 }
 
 // PublishDelay 发布延迟任务到 DelayQueue，并返回创建的 Envelope。
 func (m *Manager) PublishDelay(ctx context.Context, runner core.QueueRunner, executeAt time.Time) (*core.Envelope, error) {
-	return m.producer.PublishDelay(ctx, runner, executeAt)
+	return m.getProducer().PublishDelay(ctx, runner, executeAt)
 }
 
 // PublishDelayPayload 直接将 payload 包装为新消息并发布到 DelayQueue。
 func (m *Manager) PublishDelayPayload(ctx context.Context, runnerName string, payload string, executeAt time.Time) (*core.Envelope, error) {
-	return m.producer.PublishDelayPayload(ctx, runnerName, payload, executeAt)
+	return m.getProducer().PublishDelayPayload(ctx, runnerName, payload, executeAt)
 }
 
 // PublishDelayEnvelope 将指定 Envelope 发布到 DelayQueue。
 // 若 runnerName 未在 Registry 中注册，消息将被推入死信队列并触发告警。
 func (m *Manager) PublishDelayEnvelope(ctx context.Context, runnerName string, env *core.Envelope, executeAt time.Time) (*core.Envelope, error) {
-	return m.producer.PublishDelayEnvelope(ctx, runnerName, env, executeAt)
+	return m.getProducer().PublishDelayEnvelope(ctx, runnerName, env, executeAt)
 }

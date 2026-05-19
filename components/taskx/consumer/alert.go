@@ -31,37 +31,7 @@ func (c *Consumer) startAlertDispatcherLocked() {
 }
 
 func (c *Consumer) stopAlertDispatcherLocked() {
-	if c.alertCancel != nil {
-		c.alertCancel()
-		c.alertCancel = nil
-	}
-	c.alertWG.Wait()
-
-	if c.alertQueue != nil {
-		drained := 0
-		for {
-			select {
-			case data := <-c.alertQueue:
-				drained++
-				c.cfg.Logger.Warnf(
-					"taskx: alert queue drain on stop, source=%s type=%s runner=%s envelope_id=%s",
-					data.Source, data.AlertType, data.RunnerName, alertEnvelopeID(data.Envelope),
-				)
-			default:
-				if drained > 0 {
-					c.cfg.Logger.Warnf("taskx: drained %d pending alerts on stop", drained)
-				}
-				c.alertQueue = nil
-				break
-			}
-			if c.alertQueue == nil {
-				break
-			}
-		}
-	}
-
-	c.cfg.OnAlert = c.alertHandler
-	c.alertHandler = nil
+	c.shutdownAlertDispatcher()
 }
 
 func (c *Consumer) stopAlertDispatcherWithContextLocked(ctx context.Context) error {
@@ -72,19 +42,34 @@ func (c *Consumer) stopAlertDispatcherWithContextLocked(ctx context.Context) err
 	if err := waitWithContext(ctx, c.alertWG.Wait); err != nil {
 		return fmt.Errorf("taskx: wait alert dispatcher stop: %w", err)
 	}
+	c.drainAndRestoreAlert()
+	return nil
+}
 
+func (c *Consumer) shutdownAlertDispatcher() {
+	if c.alertCancel != nil {
+		c.alertCancel()
+		c.alertCancel = nil
+	}
+	c.alertWG.Wait()
+	c.drainAndRestoreAlert()
+}
+
+func (c *Consumer) drainAndRestoreAlert() {
 	if c.alertQueue != nil {
 		drained := 0
 		for {
 			select {
 			case data := <-c.alertQueue:
 				drained++
-				c.cfg.Logger.Warnf(
-					"taskx: alert queue drain on stop, source=%s type=%s runner=%s envelope_id=%s",
-					data.Source, data.AlertType, data.RunnerName, alertEnvelopeID(data.Envelope),
-				)
+				if c.cfg.Logger != nil {
+					c.cfg.Logger.Warnf(
+						"taskx: alert queue drain on stop, source=%s type=%s runner=%s envelope_id=%s",
+						data.Source, data.AlertType, data.RunnerName, alertEnvelopeID(data.Envelope),
+					)
+				}
 			default:
-				if drained > 0 {
+				if drained > 0 && c.cfg.Logger != nil {
 					c.cfg.Logger.Warnf("taskx: drained %d pending alerts on stop", drained)
 				}
 				c.alertQueue = nil
@@ -98,7 +83,6 @@ func (c *Consumer) stopAlertDispatcherWithContextLocked(ctx context.Context) err
 
 	c.cfg.OnAlert = c.alertHandler
 	c.alertHandler = nil
-	return nil
 }
 
 func (c *Consumer) enqueueAlert(data core.AlertData) {

@@ -78,13 +78,13 @@ func ConsumerWithProducerExample() {
 		taskx.WithLogger(log),
 	)
 
-	// 2. 从 Manager 创建 Producer（自动复用配置 + 注册中心信息）
-	p := m.NewProducer()
-
 	ctx := context.Background()
 	if err := m.Start(ctx); err != nil {
 		panic(err)
 	}
+
+	// 2. Start 后创建 Producer，以获得与消费侧一致的告警路径
+	p := m.NewProducer()
 
 	// 发布一条支付事件，Runner 消费后会自动创建延迟通知
 	_, _ = p.PublishEvent(ctx, &OrderPaymentRunner{OrderID: "ORD-200"})

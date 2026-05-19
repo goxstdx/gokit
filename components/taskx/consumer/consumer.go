@@ -51,7 +51,6 @@ type Consumer struct {
 	consumers       []QueueConsumer
 	scheduler       TimerScheduler
 	running         bool
-	lifecycleCtx    context.Context
 	lifecycleCancel context.CancelFunc
 
 	monitorCancel context.CancelFunc
@@ -101,6 +100,8 @@ func (c *Consumer) Config() *Config {
 
 // Registry 获取注册中心
 func (c *Consumer) Registry() *Registry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.ensureRegistryLocked()
 	return c.registry
 }
@@ -119,19 +120,37 @@ func (c *Consumer) SetRegistry(registry *Registry) error {
 	return nil
 }
 
-// SetEventConsumerFactory 设置事件队列消费器工厂
-func (c *Consumer) SetEventConsumerFactory(f EventConsumerFactory) {
+// SetEventConsumerFactory 设置事件队列消费器工厂（仅允许在未运行状态下设置）。
+func (c *Consumer) SetEventConsumerFactory(f EventConsumerFactory) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.running {
+		return fmt.Errorf("taskx: cannot set event consumer factory while consumer is running")
+	}
 	c.eventFactory = f
+	return nil
 }
 
-// SetDelayConsumerFactory 设置延迟队列消费器工厂
-func (c *Consumer) SetDelayConsumerFactory(f DelayConsumerFactory) {
+// SetDelayConsumerFactory 设置延迟队列消费器工厂（仅允许在未运行状态下设置）。
+func (c *Consumer) SetDelayConsumerFactory(f DelayConsumerFactory) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.running {
+		return fmt.Errorf("taskx: cannot set delay consumer factory while consumer is running")
+	}
 	c.delayFactory = f
+	return nil
 }
 
-// SetTimerSchedulerFactory 设置定时任务调度器工厂
-func (c *Consumer) SetTimerSchedulerFactory(f TimerSchedulerFactory) {
+// SetTimerSchedulerFactory 设置定时任务调度器工厂（仅允许在未运行状态下设置）。
+func (c *Consumer) SetTimerSchedulerFactory(f TimerSchedulerFactory) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.running {
+		return fmt.Errorf("taskx: cannot set timer scheduler factory while consumer is running")
+	}
 	c.timerFactory = f
+	return nil
 }
 
 // Running 返回是否正在运行
@@ -163,7 +182,10 @@ func (c *Consumer) Start(ctx context.Context) error {
 		return err
 	}
 
-	c.lifecycleCtx, c.lifecycleCancel = context.WithCancel(context.Background())
+	c.resetHealthStateLocked()
+
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
+	c.lifecycleCancel = lifecycleCancel
 
 	c.startAlertDispatcherLocked()
 	startSucceeded := false
@@ -173,7 +195,6 @@ func (c *Consumer) Start(ctx context.Context) error {
 		}
 	}()
 
-	// 启动 EventQueue 消费者（按组聚合）
 	if c.cfg.EventDriver != nil && c.eventFactory != nil {
 		baseCfg := c.buildConsumerConfig()
 		groups := c.groupEventEntries(entries.event)
@@ -198,14 +219,13 @@ func (c *Consumer) Start(ctx context.Context) error {
 				ConsumerCount:  maxConsumer,
 			}
 			qc := c.eventFactory(ecfg)
-			if err = qc.Start(c.lifecycleCtx); err != nil {
+			if err = qc.Start(lifecycleCtx); err != nil {
 				return fmt.Errorf("taskx: start event group[%s]: %w", groupName, err)
 			}
 			c.consumers = append(c.consumers, qc)
 		}
 	}
 
-	// 启动 DelayQueue 消费者
 	if c.cfg.DelayDriver != nil && c.delayFactory != nil {
 		baseCfg := c.buildConsumerConfig()
 		for _, entry := range entries.delay {
@@ -217,14 +237,13 @@ func (c *Consumer) Start(ctx context.Context) error {
 				Keys:              queue.NewQueueKeySet(c.cfg.KeyPrefix, "delay", entry.Runner.GetName()),
 			}
 			qc := c.delayFactory(entry.Runner, entry.Option, dcfg)
-			if err := qc.Start(c.lifecycleCtx); err != nil {
+			if err := qc.Start(lifecycleCtx); err != nil {
 				return fmt.Errorf("taskx: start delay[%s]: %w", entry.Runner.GetName(), err)
 			}
 			c.consumers = append(c.consumers, qc)
 		}
 	}
 
-	// 启动 TimerTask
 	if c.cfg.LockDriver != nil && c.timerFactory != nil {
 		s := c.timerFactory(c.cfg.LockDriver, c.cfg.KeyPrefix, c.cfg)
 		for _, entry := range entries.timer {
@@ -248,6 +267,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 }
 
 // Stop 优雅停止所有队列消费者和定时任务。
+// 若 ctx 超时，已完成的步骤不可逆，Stop 会尽力推进后续步骤并返回首个超时错误。
 func (c *Consumer) Stop(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -268,15 +288,23 @@ func (c *Consumer) Stop(ctx context.Context) error {
 	}
 	c.cfg.Logger.Infof("taskx: consumer stopping")
 
+	var firstErr error
+	setErr := func(err error) {
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+
 	if c.monitorCancel != nil {
 		c.monitorCancel()
 		c.monitorCancel = nil
 	}
 	if err := waitWithContext(ctx, c.monitorWG.Wait); err != nil {
-		c.cfg.Logger.Errorf("taskx: consumer stop failed while waiting monitor: %v", err)
-		return fmt.Errorf("taskx: wait monitor stop: %w", err)
+		c.cfg.Logger.Errorf("taskx: consumer stop: wait monitor: %v", err)
+		setErr(fmt.Errorf("taskx: wait monitor stop: %w", err))
+	} else {
+		c.cfg.Logger.Infof("taskx: monitor stopped")
 	}
-	c.cfg.Logger.Infof("taskx: monitor stopped")
 
 	if c.scheduler != nil {
 		stopCtx := c.scheduler.Stop()
@@ -284,8 +312,8 @@ func (c *Consumer) Stop(ctx context.Context) error {
 		case <-stopCtx.Done():
 			c.cfg.Logger.Infof("taskx: timer scheduler stopped")
 		case <-ctx.Done():
-			c.cfg.Logger.Errorf("taskx: consumer stop timeout while waiting timer stop: %v", ctx.Err())
-			return fmt.Errorf("taskx: wait timer stop: %w", ctx.Err())
+			c.cfg.Logger.Errorf("taskx: consumer stop: wait timer: %v", ctx.Err())
+			setErr(fmt.Errorf("taskx: wait timer stop: %w", ctx.Err()))
 		}
 		c.scheduler = nil
 	}
@@ -297,24 +325,36 @@ func (c *Consumer) Stop(ctx context.Context) error {
 	}
 
 	if err := c.stopConsumersWithContextLocked(ctx); err != nil {
-		c.cfg.Logger.Errorf("taskx: consumer stop failed while stopping consumers: %v", err)
-		return err
+		c.cfg.Logger.Errorf("taskx: consumer stop: stopping consumers: %v", err)
+		setErr(err)
+	} else {
+		c.cfg.Logger.Infof("taskx: all consumers stopped")
 	}
-	c.cfg.Logger.Infof("taskx: all consumers stopped")
 
 	if err := c.stopAlertDispatcherWithContextLocked(ctx); err != nil {
-		c.cfg.Logger.Errorf("taskx: consumer stop failed while stopping alert dispatcher: %v", err)
-		return err
+		c.cfg.Logger.Errorf("taskx: consumer stop: stopping alert dispatcher: %v", err)
+		setErr(err)
+	} else {
+		c.cfg.Logger.Infof("taskx: alert dispatcher stopped")
 	}
-	c.cfg.Logger.Infof("taskx: alert dispatcher stopped")
 	c.cfg.OnHeartbeat = nil
 
 	c.running = false
+	c.resetHealthStateLocked()
 	snapCtx, snapCancel := c.internalOpContext(context.Background(), 0)
 	c.refreshHealthSnapshot(snapCtx, false)
 	snapCancel()
 	c.cfg.Logger.Infof("taskx: consumer stopped")
-	return nil
+	return firstErr
+}
+
+func (c *Consumer) resetHealthStateLocked() {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	c.eventBeatAt = make(map[string]time.Time)
+	c.delayBeatAt = make(map[string]time.Time)
+	c.timerBeatAt = time.Time{}
+	c.healthFailCounts = make(map[string]int)
 }
 
 func (c *Consumer) stopConsumersLocked() {
@@ -335,7 +375,11 @@ func (c *Consumer) cleanupStartFailureLocked() {
 		c.scheduler = nil
 	}
 	c.stopConsumersLocked()
-	c.stopAlertDispatcherLocked()
+
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), defaults.InternalOpTimeout)
+	_ = c.stopAlertDispatcherWithContextLocked(cleanupCtx)
+	cleanupCancel()
+
 	c.cfg.OnHeartbeat = nil
 	c.running = false
 }
@@ -508,6 +552,11 @@ func (c *Consumer) checkStartReadyLocked(ctx context.Context) (startEntries, err
 		CheckVersion(ctx context.Context) error
 	}
 	if v, ok := c.cfg.EventDriver.(versionChecker); ok {
+		if err := v.CheckVersion(ctx); err != nil {
+			return startEntries{}, err
+		}
+	}
+	if v, ok := c.cfg.DelayDriver.(versionChecker); ok {
 		if err := v.CheckVersion(ctx); err != nil {
 			return startEntries{}, err
 		}

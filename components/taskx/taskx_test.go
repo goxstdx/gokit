@@ -547,6 +547,7 @@ func TestPublishAPIs(t *testing.T) {
 		taskx.WithKeyPrefix(prefix),
 		taskx.WithLogger(log),
 		taskx.WithPollInterval(200*time.Millisecond),
+		taskx.WithEventPollInterval(200*time.Millisecond),
 	)
 	if err := mgr.Start(ctx); err != nil {
 		t.Fatal(err)

@@ -34,10 +34,11 @@ func NewRedisConsumer(rdb redis.Cmdable, registry *Registry, opts ...Option) *Co
 }
 
 // SetDefaultFactories 设置默认的消费器/调度器工厂（Redis 实现）。
+// 仅在 Consumer 未运行时调用，NewRedisConsumer 已自动调用。
 func (c *Consumer) SetDefaultFactories() {
-	c.SetEventConsumerFactory(newEventConsumerFactory)
-	c.SetDelayConsumerFactory(newDelayConsumerFactory)
-	c.SetTimerSchedulerFactory(newTimerSchedulerFactory)
+	_ = c.SetEventConsumerFactory(newEventConsumerFactory)
+	_ = c.SetDelayConsumerFactory(newDelayConsumerFactory)
+	_ = c.SetTimerSchedulerFactory(newTimerSchedulerFactory)
 }
 
 func newEventConsumerFactory(cfg queue.EventConsumerConfig) QueueConsumer {

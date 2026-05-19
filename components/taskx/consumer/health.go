@@ -94,6 +94,9 @@ func (c *Consumer) startMonitorLocked() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if ctx.Err() != nil {
+					return
+				}
 				c.refreshHealthSnapshot(ctx, true)
 			}
 		}
@@ -124,12 +127,14 @@ func (c *Consumer) refreshHealthSnapshot(ctx context.Context, running bool) {
 		Delay:     make(map[string]QueueListenerHealth, len(delayEntries)),
 	}
 
+	shutting := ctx.Err() != nil
+
 	eventGroups := c.groupEventEntries(eventEntries)
 	for groupName := range eventGroups {
 		keys := queue.NewQueueKeySet(c.cfg.KeyPrefix, "event", groupName)
 		item := QueueListenerHealth{LastBeatAt: eventBeat[groupName]}
 		item.Alive = !item.LastBeatAt.IsZero() && now.Sub(item.LastBeatAt) <= c.cfg.HealthBeatTimeout
-		if c.cfg.EventDriver != nil {
+		if c.cfg.EventDriver != nil && !shutting {
 			lenCtx, cancel := c.internalOpContext(ctx, defaults.HealthLenTimeout)
 			n, err := c.cfg.EventDriver.Len(lenCtx, keys.Pending)
 			cancel()
@@ -146,7 +151,7 @@ func (c *Consumer) refreshHealthSnapshot(ctx context.Context, running bool) {
 		keys := queue.NewQueueKeySet(c.cfg.KeyPrefix, "delay", name)
 		item := QueueListenerHealth{LastBeatAt: delayBeat[name]}
 		item.Alive = !item.LastBeatAt.IsZero() && now.Sub(item.LastBeatAt) <= c.cfg.HealthBeatTimeout
-		if c.cfg.DelayDriver != nil {
+		if c.cfg.DelayDriver != nil && !shutting {
 			lenCtx, cancel := c.internalOpContext(ctx, defaults.HealthLenTimeout)
 			n, err := c.cfg.DelayDriver.Len(lenCtx, keys.Pending)
 			cancel()
@@ -168,7 +173,7 @@ func (c *Consumer) refreshHealthSnapshot(ctx context.Context, running bool) {
 	c.healthSnapshot = snap
 	c.healthMu.Unlock()
 
-	if running {
+	if running && !shutting {
 		c.checkHealthAlerts(snap)
 	}
 }
@@ -182,8 +187,8 @@ func (c *Consumer) checkHealthAlerts(snap HealthSnapshot) {
 	c.healthMu.Lock()
 	defer c.healthMu.Unlock()
 
-	for name, st := range snap.Event {
-		key := "event:" + name
+	for groupName, st := range snap.Event {
+		key := "event:" + groupName
 		if !st.Alive || st.LenError != "" {
 			c.healthFailCounts[key]++
 			if c.healthFailCounts[key] == threshold {
@@ -191,19 +196,19 @@ func (c *Consumer) checkHealthAlerts(snap HealthSnapshot) {
 				if st.LenError != "" {
 					reason = "pending len error: " + st.LenError
 				}
-				c.cfg.Logger.Errorf("taskx: event[%s] unhealthy for %d consecutive checks: %s", name, threshold, reason)
+				c.cfg.Logger.Errorf("taskx: event group[%s] unhealthy for %d consecutive checks: %s", groupName, threshold, reason)
 				c.enqueueAlert(
 					core.AlertData{
 						Source:     core.AlertSourceEvent,
 						AlertType:  core.AlertListenerUnhealthy,
-						RunnerName: name,
-						Remark:     fmt.Sprintf("consecutive failures: %d, reason: %s", threshold, reason),
+						RunnerName: groupName,
+						Remark:     fmt.Sprintf("group=%s, consecutive failures: %d, reason: %s", groupName, threshold, reason),
 					},
 				)
 			}
 		} else {
 			if c.healthFailCounts[key] > 0 {
-				c.cfg.Logger.Infof("taskx: event[%s] recovered after %d consecutive failures", name, c.healthFailCounts[key])
+				c.cfg.Logger.Infof("taskx: event group[%s] recovered after %d consecutive failures", groupName, c.healthFailCounts[key])
 			}
 			c.healthFailCounts[key] = 0
 		}
