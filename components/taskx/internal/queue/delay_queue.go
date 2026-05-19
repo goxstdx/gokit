@@ -475,18 +475,34 @@ func (c *DelayConsumer) work(ctx context.Context, id int) {
 func (c *DelayConsumer) safeProcess(ctx context.Context, raw string, id int) {
 	defer func() {
 		if r := recover(); r != nil {
-			c.logger.Errorf("taskx: delay[%s][%d] panic in process: %v", c.runner.GetName(), id, r)
-			c.alert(
-				core.AlertData{
-					Source:     core.AlertSourceDelay,
-					AlertType:  core.AlertCorruptMessage,
-					RunnerName: c.runner.GetName(),
-					Remark:     fmt.Sprintf("panic: %v", r),
-				},
-			)
+			panicErr := fmt.Errorf("panic: %v", r)
+			c.logger.Errorf("taskx: delay[%s][%d] panic in process: %v", c.runner.GetName(), id, panicErr)
+			c.handlePanicFailure(raw, id, panicErr)
 		}
 	}()
 	c.process(ctx, raw, id)
+}
+
+func (c *DelayConsumer) handlePanicFailure(raw string, id int, panicErr error) {
+	env, err := core.DecodeEnvelope(raw)
+	if err != nil {
+		c.alert(
+			core.AlertData{
+				Source:       core.AlertSourceDelay,
+				AlertType:    core.AlertCorruptMessage,
+				RunnerName:   c.runner.GetName(),
+				RunnerResult: core.RunnerFuncResult{IsOk: false, Err: panicErr},
+				Remark:       fmt.Sprintf("panic and decode failed: %v", err),
+			},
+		)
+		opCtx, opCancel := c.internalOpContext()
+		defer opCancel()
+		if ackErr := c.driver.Ack(opCtx, c.keys.Processing, raw); ackErr != nil {
+			c.logger.Errorf("taskx: delay[%s][%d] ack(panic-decode-err) failed: %v", c.runner.GetName(), id, ackErr)
+		}
+		return
+	}
+	c.finishProcess(raw, id, env, core.RunnerFuncResult{IsOk: false, Err: panicErr})
 }
 
 func (c *DelayConsumer) process(ctx context.Context, raw string, id int) {
@@ -516,7 +532,10 @@ func (c *DelayConsumer) process(ctx context.Context, raw string, id int) {
 		runCtx = context.WithValue(runCtx, c.traceKey, env.ID)
 	}
 	result := c.runner.Run(runCtx, env.Payload)
+	c.finishProcess(raw, id, env, result)
+}
 
+func (c *DelayConsumer) finishProcess(raw string, id int, env *core.Envelope, result core.RunnerFuncResult) {
 	if result.IsOk {
 		opCtx, opCancel := c.internalOpContext()
 		defer opCancel()

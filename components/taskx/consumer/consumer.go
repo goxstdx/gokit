@@ -126,7 +126,7 @@ func (c *Consumer) Registry() *Registry {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ensureRegistryLocked()
-	return c.registry
+	return c.registry.Snapshot()
 }
 
 // SetRegistry 设置注册中心（仅允许在未运行且未停止中的状态下设置）。
@@ -210,6 +210,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	c.registry.Freeze()
 
 	c.resetHealthStateLocked()
 
@@ -373,6 +374,7 @@ func (c *Consumer) Stop(ctx context.Context) error {
 	c.cfg.OnHeartbeat = nil
 
 	c.running = false
+	c.registry.Unfreeze()
 	if firstErr == nil {
 		c.stopped = true
 	}
@@ -418,6 +420,7 @@ func (c *Consumer) cleanupStartFailureLocked() {
 
 	c.cfg.OnHeartbeat = nil
 	c.running = false
+	c.registry.Unfreeze()
 }
 
 func (c *Consumer) stopConsumersWithContextLocked(ctx context.Context) error {

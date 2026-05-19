@@ -31,9 +31,12 @@ type Registry struct {
 	eventRunners map[string]*EventEntry
 	delayRunners map[string]*DelayEntry
 	timerTasks   map[string]*TimerEntry
+	frozen       bool
 }
 
 func (r *Registry) IsHasRunner() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	if r.eventRunners == nil && r.delayRunners == nil && r.timerTasks == nil {
 		return false
 	}
@@ -63,6 +66,9 @@ func (r *Registry) RegisterEventRunner(runner QueueRunner, opts ...RunnerOption)
 	name := runner.GetName()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frozen {
+		return fmt.Errorf("taskx: registry is frozen and cannot be modified")
+	}
 
 	if _, exists := r.eventRunners[name]; exists {
 		return fmt.Errorf("taskx: event runner %q already registered", name)
@@ -86,6 +92,9 @@ func (r *Registry) RegisterDelayRunner(runner QueueRunner, opts ...RunnerOption)
 	name := runner.GetName()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frozen {
+		return fmt.Errorf("taskx: registry is frozen and cannot be modified")
+	}
 
 	if _, exists := r.delayRunners[name]; exists {
 		return fmt.Errorf("taskx: delay runner %q already registered", name)
@@ -109,6 +118,9 @@ func (r *Registry) RegisterTimerTask(task TimerTaskRunner, opts ...TimerTaskOpti
 	name := task.GetName()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frozen {
+		return fmt.Errorf("taskx: registry is frozen and cannot be modified")
+	}
 
 	if _, exists := r.timerTasks[name]; exists {
 		return fmt.Errorf("taskx: timer task %q already registered", name)
@@ -123,7 +135,12 @@ func (r *Registry) GetEventRunners() map[string]*EventEntry {
 	defer r.mu.RUnlock()
 	cp := make(map[string]*EventEntry, len(r.eventRunners))
 	for k, v := range r.eventRunners {
-		cp[k] = v
+		if v == nil {
+			cp[k] = nil
+			continue
+		}
+		entryCopy := *v
+		cp[k] = &entryCopy
 	}
 	return cp
 }
@@ -134,7 +151,12 @@ func (r *Registry) GetDelayRunners() map[string]*DelayEntry {
 	defer r.mu.RUnlock()
 	cp := make(map[string]*DelayEntry, len(r.delayRunners))
 	for k, v := range r.delayRunners {
-		cp[k] = v
+		if v == nil {
+			cp[k] = nil
+			continue
+		}
+		entryCopy := *v
+		cp[k] = &entryCopy
 	}
 	return cp
 }
@@ -145,9 +167,72 @@ func (r *Registry) GetTimerTasks() map[string]*TimerEntry {
 	defer r.mu.RUnlock()
 	cp := make(map[string]*TimerEntry, len(r.timerTasks))
 	for k, v := range r.timerTasks {
-		cp[k] = v
+		if v == nil {
+			cp[k] = nil
+			continue
+		}
+		entryCopy := *v
+		cp[k] = &entryCopy
 	}
 	return cp
+}
+
+// Snapshot 返回当前注册表的只读深拷贝快照，供外部查看使用。
+func (r *Registry) Snapshot() *Registry {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	snapshot := &Registry{
+		eventRunners: make(map[string]*EventEntry, len(r.eventRunners)),
+		delayRunners: make(map[string]*DelayEntry, len(r.delayRunners)),
+		timerTasks:   make(map[string]*TimerEntry, len(r.timerTasks)),
+		frozen:       true,
+	}
+	for k, v := range r.eventRunners {
+		if v == nil {
+			snapshot.eventRunners[k] = nil
+			continue
+		}
+		entryCopy := *v
+		snapshot.eventRunners[k] = &entryCopy
+	}
+	for k, v := range r.delayRunners {
+		if v == nil {
+			snapshot.delayRunners[k] = nil
+			continue
+		}
+		entryCopy := *v
+		snapshot.delayRunners[k] = &entryCopy
+	}
+	for k, v := range r.timerTasks {
+		if v == nil {
+			snapshot.timerTasks[k] = nil
+			continue
+		}
+		entryCopy := *v
+		snapshot.timerTasks[k] = &entryCopy
+	}
+	return snapshot
+}
+
+func (r *Registry) Freeze() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.frozen = true
+}
+
+func (r *Registry) Unfreeze() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.frozen = false
 }
 
 // EventGroupResolver 返回一个解析函数，根据 runnerName 返回 (groupName, registered)。

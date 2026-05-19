@@ -107,7 +107,7 @@ taskx:event:{group_name}:dead          # Event 死信
 
 ### 4.2 死信恢复边界
 
-`RecoverEventDead` / `RecoverDelayDead` 当前是 best-effort 恢复：先从 dead 中弹出消息，在 Go 侧重置 `retry_count` 后写回 pending。如果弹出后进程退出、context 超时或 Redis 写 pending 失败，该条消息可能无法自动恢复。这个取舍保留了“恢复时重置重试计数”的语义；后续如果需要更强可靠性，可考虑“不弹出先复制”、Lua 原子恢复但不重写 Envelope，或引入 `recovering` 中间队列。
+`RecoverEventDead` / `RecoverDelayDead` 当前是 best-effort 恢复：先从 dead 中弹出消息，在 Go 侧重置 `retry_count` 后写回 pending。如果弹出后进程退出、context 超时或 Redis 写 pending 失败，该条消息可能无法自动恢复。`RecoverEventDead` 按传入 runner 所属的 event group 恢复；`RecoverDelayDead` 按具体 delay runner 恢复。这个取舍保留了“恢复时重置重试计数”的语义；后续如果需要更强可靠性，可考虑“不弹出先复制”、Lua 原子恢复但不重写 Envelope，或引入 `recovering` 中间队列。
 
 ### 5. Valkey / Redis Cluster 兼容
 
@@ -208,6 +208,9 @@ Cron 触发 ──► 按并发策略生成锁 Key ──► 抢分布式锁 ─
 - `example/04_custom_driver.go`：自定义驱动接入
 - `example/05_alert_notify.go`：接收 NextTime 告警并由业务转投 DelayQueue
 - `example/06_all_options.go`：全量 `With...` 配置示例（每项含注释）
+- `example/07_producer_only.go`：纯 Producer 场景（只推送不消费）
+- `example/08_consumer_only.go`：纯 Consumer 场景（只消费不推送）
+- `example/09_consumer_with_producer.go`：同一个 Manager 同时具备消费与推送能力
 
 ### 直接投递 payload（新消息）
 
@@ -221,7 +224,8 @@ if env, err := mgr.PublishEventPayload(ctx, "event-runner-name", rawPayload); er
     log.Infof("event envelope id=%s", env.ID)
 }
 
-// 直接投递到 delay（executeAt 为正数秒级时间戳；小于等于当前时间表示尽快消费）
+// 直接投递到 delay（executeAt 为 time.Time；zero 会被拒绝）
+// 当前实现使用秒级“过去时间”校验，以避免传入 time.Now() 时因更细粒度时间差被误判为过期。
 if env, err := mgr.PublishDelayPayload(ctx, "delay-runner-name", rawPayload, executeAt); err != nil {
     return err
 } else {

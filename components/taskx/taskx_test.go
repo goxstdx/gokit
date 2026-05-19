@@ -833,7 +833,7 @@ func TestDeadLetterRecovery(t *testing.T) {
 	}
 
 	// 恢复死信
-	recovered, err := mgr.RecoverEventDead(ctx, "dlq-recover", 100)
+	recovered, err := mgr.RecoverEventDead(ctx, runner, 100)
 	if err != nil {
 		t.Fatal(err)
 	}

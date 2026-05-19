@@ -141,6 +141,37 @@ func TestSetRegistryFailsWhileRunning(t *testing.T) {
 	}
 }
 
+func TestRegistryReturnsReadOnlySnapshotAndFreezesLiveRegistryWhileRunning(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.RegisterEventRunner(stubRunner{name: "evt"}); err != nil {
+		t.Fatal(err)
+	}
+	c := New(
+		reg,
+		WithLogger(testLogger(t)),
+		WithLockDriver(stubLockDriver{}),
+		WithEventQueueDriver(stubEventDriver{}),
+	)
+	c.SetEventConsumerFactory(func(queue.EventConsumerConfig) QueueConsumer {
+		return &stubQueueConsumer{}
+	})
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = c.Stop(context.Background()) }()
+
+	if err := reg.RegisterEventRunner(stubRunner{name: "evt-2"}); err == nil || !strings.Contains(err.Error(), "registry is frozen") {
+		t.Fatalf("expected frozen registry error, got %v", err)
+	}
+	snapshot := c.Registry()
+	if snapshot == reg {
+		t.Fatal("expected snapshot registry, got live pointer")
+	}
+	if err := snapshot.RegisterEventRunner(stubRunner{name: "snapshot-only"}); err == nil || !strings.Contains(err.Error(), "registry is frozen") {
+		t.Fatalf("expected snapshot to be read-only, got %v", err)
+	}
+}
+
 func TestEmptyRegistryFailsStartAndCheckReady(t *testing.T) {
 	c := New(nil, WithLogger(testLogger(t)))
 	if err := c.CheckStartReady(context.Background()); err == nil || !strings.Contains(err.Error(), "at least one runner/task") {

@@ -10,11 +10,15 @@ import (
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/internal/queue"
 )
 
-// RecoverEventDead 从事件队列死信中恢复消息，重置重试计数。
-func (c *Consumer) RecoverEventDead(ctx context.Context, runnerName string, count int64) (int64, error) {
+// RecoverEventDead 按指定 runner 所属的事件组恢复死信消息，并重置重试计数。
+func (c *Consumer) RecoverEventDead(ctx context.Context, runner core.QueueRunner, count int64) (int64, error) {
 	if c.cfg.EventDriver == nil {
 		return 0, nil
 	}
+	if runner == nil {
+		return 0, fmt.Errorf("taskx: event runner is required")
+	}
+	runnerName := runner.GetName()
 	groupName := c.resolveEventGroupName(runnerName)
 	keys := queue.NewQueueKeySet(c.cfg.KeyPrefix, "event", groupName)
 	return recoverEventDeadWithReset(ctx, c.cfg.EventDriver, keys.Dead, keys.Pending, count, c.cfg.Logger, c.cfg.OnAlert)

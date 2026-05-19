@@ -205,8 +205,11 @@ func TestNewManagerWithNilRegistryCreatesEmptyRegistry(t *testing.T) {
 func TestNewManagerUsesCtorRegistry(t *testing.T) {
 	reg := NewRegistry()
 	mgr := NewManager(reg)
-	if mgr.Registry() != reg {
-		t.Fatal("expected constructor registry to be used")
+	if mgr.Registry() == reg {
+		t.Fatal("expected Registry to return a read-only snapshot, not the live registry pointer")
+	}
+	if len(mgr.Registry().GetEventRunners()) != 0 {
+		t.Fatal("expected empty registry snapshot")
 	}
 }
 
@@ -216,14 +219,42 @@ func TestSetRegistrySupportsReplaceAndNilReset(t *testing.T) {
 	if err := mgr.SetRegistry(reg); err != nil {
 		t.Fatalf("set registry: %v", err)
 	}
-	if mgr.Registry() != reg {
-		t.Fatal("expected registry to be replaced")
+	if mgr.Registry() == reg {
+		t.Fatal("expected Registry to return a snapshot after replacement")
 	}
 	if err := mgr.SetRegistry(nil); err != nil {
 		t.Fatalf("set nil registry: %v", err)
 	}
 	if mgr.Registry() == nil {
 		t.Fatal("expected nil registry input to be replaced by empty registry")
+	}
+}
+
+func TestRegistrySnapshotIsReadOnlyAndRunningRegistryIsFrozen(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.RegisterEventRunner(internalQueueRunner{name: "evt"}); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewManager(
+		reg,
+		WithLogger(newInternalTestLogger(t)),
+		WithLockDriver(internalLockDriver{}),
+		WithEventQueueDriver(internalEventDriver{}),
+	)
+	mgr.SetEventConsumerFactory(func(queue.EventConsumerConfig) QueueConsumer {
+		return &internalConsumer{}
+	})
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = mgr.Stop(context.Background()) }()
+
+	if err := reg.RegisterEventRunner(internalQueueRunner{name: "evt-2"}); err == nil || !strings.Contains(err.Error(), "registry is frozen") {
+		t.Fatalf("expected frozen registry error, got %v", err)
+	}
+	snapshot := mgr.Registry()
+	if err := snapshot.RegisterEventRunner(internalQueueRunner{name: "snapshot-only"}); err == nil || !strings.Contains(err.Error(), "registry is frozen") {
+		t.Fatalf("expected snapshot to be read-only, got %v", err)
 	}
 }
 

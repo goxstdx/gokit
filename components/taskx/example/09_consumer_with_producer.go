@@ -15,7 +15,8 @@ import (
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx"
 )
 
-// OrderPaymentRunner 订单支付 Runner，消费后需要延迟发送通知（消费端推送场景）。
+// OrderPaymentRunner 订单支付 Runner。
+// 该 Runner 只负责消费支付事件本身，不在消费逻辑内部继续推送新任务。
 type OrderPaymentRunner struct {
 	OrderID string `json:"order_id"`
 }
@@ -37,7 +38,7 @@ func (r *OrderPaymentRunner) Run(ctx context.Context, payload string) taskx.Runn
 }
 
 // ConsumerWithProducerExample 展示 Manager 同时具备消费与推送能力的场景。
-// 与纯 Producer / 纯 Consumer 不同，这里同一个 Manager 既启动消费链路，也直接负责发布任务。
+// 与纯 Producer / 纯 Consumer 不同，这里同一个 Manager 既启动消费链路，也直接通过自身的 Publish API 发布任务。
 func ConsumerWithProducerExample() {
 	log, _ := logger_factory.NewLogger(
 		logger_factory.Config{

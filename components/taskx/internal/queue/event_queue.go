@@ -387,18 +387,52 @@ func (c *EventConsumer) fetchAndProcess(ctx context.Context, id int) {
 func (c *EventConsumer) safeProcess(ctx context.Context, raw string, id int) {
 	defer func() {
 		if r := recover(); r != nil {
-			c.logger.Errorf("taskx: event[%s][%d] panic in process: %v", c.logName(), id, r)
-			c.alert(
-				core.AlertData{
-					Source:     core.AlertSourceEvent,
-					AlertType:  core.AlertCorruptMessage,
-					RunnerName: c.logName(),
-					Remark:     fmt.Sprintf("panic: %v", r),
-				},
-			)
+			panicErr := fmt.Errorf("panic: %v", r)
+			c.logger.Errorf("taskx: event[%s][%d] panic in process: %v", c.logName(), id, panicErr)
+			c.handlePanicFailure(raw, id, panicErr)
 		}
 	}()
 	c.process(ctx, raw, id)
+}
+
+func (c *EventConsumer) handlePanicFailure(raw string, id int, panicErr error) {
+	env, err := core.DecodeEnvelope(raw)
+	if err != nil {
+		c.alert(
+			core.AlertData{
+				Source:       core.AlertSourceEvent,
+				AlertType:    core.AlertCorruptMessage,
+				RunnerName:   c.logName(),
+				RunnerResult: core.RunnerFuncResult{IsOk: false, Err: panicErr},
+				Remark:       fmt.Sprintf("panic and decode failed: %v", err),
+			},
+		)
+		opCtx, opCancel := c.internalOpContext()
+		defer opCancel()
+		if ackErr := c.driver.Ack(opCtx, c.keys.Processing, raw); ackErr != nil {
+			c.logger.Errorf("taskx: event[%s][%d] ack(panic-decode-err) failed: %v", c.logName(), id, ackErr)
+		}
+		return
+	}
+	entry, ok := c.runners[env.RunnerName]
+	if !ok {
+		c.alert(
+			core.AlertData{
+				Source:       core.AlertSourceEvent,
+				AlertType:    core.AlertUnknownRunner,
+				RunnerName:   env.RunnerName,
+				Envelope:     env,
+				RunnerResult: core.RunnerFuncResult{IsOk: false, Err: panicErr},
+			},
+		)
+		opCtx, opCancel := c.internalOpContext()
+		defer opCancel()
+		if ackErr := c.driver.Ack(opCtx, c.keys.Processing, raw); ackErr != nil {
+			c.logger.Errorf("taskx: event[%s][%d] ack(panic-unknown-runner) failed: %v", c.logName(), id, ackErr)
+		}
+		return
+	}
+	c.finishProcess(raw, id, env, entry.Option.MaxRetry, core.RunnerFuncResult{IsOk: false, Err: panicErr})
 }
 
 func (c *EventConsumer) process(ctx context.Context, raw string, id int) {
@@ -446,7 +480,10 @@ func (c *EventConsumer) process(ctx context.Context, raw string, id int) {
 		runCtx = context.WithValue(runCtx, c.traceKey, env.ID)
 	}
 	result := entry.Runner.Run(runCtx, env.Payload)
+	c.finishProcess(raw, id, env, entry.Option.MaxRetry, result)
+}
 
+func (c *EventConsumer) finishProcess(raw string, id int, env *core.Envelope, maxRetry int, result core.RunnerFuncResult) {
 	if result.IsOk {
 		opCtx, opCancel := c.internalOpContext()
 		defer opCancel()
@@ -476,10 +513,10 @@ func (c *EventConsumer) process(ctx context.Context, raw string, id int) {
 	}
 	env.RetryCount++
 
-	if env.RetryCount > entry.Option.MaxRetry {
+	if env.RetryCount > maxRetry {
 		c.logger.Warnf(
 			"taskx: event[%s][%d] runner=%s max retry reached (%d), moving to dead letter",
-			c.logName(), id, env.RunnerName, entry.Option.MaxRetry,
+			c.logName(), id, env.RunnerName, maxRetry,
 		)
 		c.alert(
 			core.AlertData{
