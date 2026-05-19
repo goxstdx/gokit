@@ -13,7 +13,6 @@ import (
 
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/logger_factory"
 	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx"
-	"gitlab.ops.gooddriver.io/mutual_public/go-mutual-common/components/taskx/producer"
 )
 
 // OrderPaymentRunner 订单支付 Runner，消费后需要延迟发送通知（消费端推送场景）。
@@ -34,29 +33,11 @@ func (r *OrderPaymentRunner) Run(ctx context.Context, payload string) taskx.Runn
 		return taskx.RunnerFuncResult{IsOk: false, Err: err}
 	}
 	fmt.Printf("processing payment: order=%s\n", data.OrderID)
-
-	// 消费完成后，通过注入的 producer 发布一条延迟通知任务
-	if p := ProducerFromCtx(ctx); p != nil {
-		_, _ = p.PublishDelay(ctx,
-			&OrderNotifyRunner{OrderID: data.OrderID, UserID: "auto"},
-			time.Now().Add(10*time.Second),
-		)
-	}
 	return taskx.RunnerFuncResult{IsOk: true}
 }
 
-type ctxKey struct{}
-
-func ProducerFromCtx(ctx context.Context) *producer.Producer {
-	if v, ok := ctx.Value(ctxKey{}).(*producer.Producer); ok {
-		return v
-	}
-	return nil
-}
-
-// ConsumerWithProducerExample 展示"消费端也推送"场景：
-// 使用 Manager 同时管理消费与推送能力。
-// Consumer 消费任务后，通过 Producer 发布新的延迟任务。
+// ConsumerWithProducerExample 展示 Manager 同时具备消费与推送能力的场景。
+// 与纯 Producer / 纯 Consumer 不同，这里同一个 Manager 既启动消费链路，也直接负责发布任务。
 func ConsumerWithProducerExample() {
 	log, _ := logger_factory.NewLogger(
 		logger_factory.Config{
@@ -68,7 +49,7 @@ func ConsumerWithProducerExample() {
 
 	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
 
-	// 1. 创建 Manager（注册并启动消费）
+	// 1. 创建 Manager：同一实例既负责消费，也负责推送。
 	reg := taskx.NewRegistry()
 	_ = reg.RegisterEventRunner(&OrderPaymentRunner{})
 	_ = reg.RegisterDelayRunner(&OrderNotifyRunner{}, taskx.RunnerOption{MaxRetry: 3})
@@ -83,11 +64,14 @@ func ConsumerWithProducerExample() {
 		panic(err)
 	}
 
-	// 2. Start 后创建 Producer，以获得与消费侧一致的告警路径
-	p := m.NewProducer()
+	// 2. 使用同一个 Manager 直接发布事件任务。
+	_, _ = m.PublishEvent(ctx, &OrderPaymentRunner{OrderID: "ORD-200"})
 
-	// 发布一条支付事件，Runner 消费后会自动创建延迟通知
-	_, _ = p.PublishEvent(ctx, &OrderPaymentRunner{OrderID: "ORD-200"})
+	// 3. 同一个 Manager 也可以直接发布延迟任务。
+	_, _ = m.PublishDelay(ctx,
+		&OrderNotifyRunner{OrderID: "ORD-201", UserID: "USR-200"},
+		time.Now().Add(10*time.Second),
+	)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

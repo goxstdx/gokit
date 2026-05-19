@@ -21,6 +21,8 @@ func (m *Manager) buildProducer() *producer.Producer {
 	})
 }
 
+// rebuildProducer 用最新 Consumer 快照替换内部 Producer。
+// 该替换用于让 Publish* 始终使用与当前生命周期一致的告警路径。
 func (m *Manager) rebuildProducer() {
 	p := m.buildProducer()
 	m.pmu.Lock()

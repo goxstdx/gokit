@@ -31,7 +31,9 @@ func NewManager(registry *Registry, opts ...Option) *Manager {
 }
 
 // Start 启动所有已注册的队列和任务。
-// Start 完成后会重建内部 Producer 以绑定 alert dispatcher。
+// Start 完成后会重建内部 Producer：
+// - 消费态下 Producer 的 OnAlert 需要路由到内部 enqueueAlert（异步队列分发）
+// - Producer 是配置快照对象，不会自动感知 Consumer 状态变化
 func (m *Manager) Start(ctx context.Context) error {
 	if err := m.Consumer.Start(ctx); err != nil {
 		return err
@@ -41,7 +43,9 @@ func (m *Manager) Start(ctx context.Context) error {
 }
 
 // Stop 优雅停止所有队列和任务。
-// Stop 完成后会重建 Producer 以恢复直连外部 OnAlert 回调。
+// Stop 完成后会重建 Producer：
+// - 停机后内部 alert dispatcher 已关闭，不应继续把告警投递到内部队列
+// - 需要恢复为调用方传入的原始 OnAlert 回调链路
 func (m *Manager) Stop(ctx context.Context) error {
 	if err := m.Consumer.Stop(ctx); err != nil {
 		return err
