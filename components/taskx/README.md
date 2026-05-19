@@ -6,7 +6,7 @@
 
 | 能力 | 说明 | 底层结构（Redis） |
 |------|------|------------------|
-| **EventQueue** | 实时事件队列，生产即消费 | List（LPUSH / BLMOVE） |
+| **EventQueue** | 实时事件队列，生产即消费 | List + ZSet（LPUSH / Lua: RPOP+ZADD） |
 | **DelayQueue** | 延迟队列，指定时间触发 | ZSet（ZADD / ZRANGEBYSCORE） |
 | **TimerTask** | 定时任务，cron 表达式驱动 | robfig/cron/v3 + 分布式锁 |
 
@@ -14,28 +14,20 @@
 
 ```
 components/taskx/
-├── core/                    # 共享类型（QueueRunner, Envelope, Logger 等）
-│   └── type.go
-├── driver/                  # 驱动接口（纯接口，零实现）
-│   ├── event_queue.go       #   EventQueueDriver
-│   ├── delay_queue.go       #   DelayQueueDriver
-│   └── lock.go              #   LockDriver
-├── provider/                # 驱动实现（按技术栈分目录）
-│   └── redis/               #   Redis/Valkey 驱动
-│       ├── event_queue.go
-│       ├── delay_queue.go
-│       ├── lock.go
-│       └── script.go        #   Lua 脚本（HashTag 兼容集群）
-├── queue/                   # 队列消费管理器
-│   ├── event_queue.go       #   EventConsumer（N 个消费协程）
-│   └── delay_queue.go       #   DelayConsumer（1 轮询 + N worker）
-├── timer/                   # 定时任务
-│   └── timer_task.go        #   Scheduler（cron 封装）
-├── type.go                  # 重新导出 core 类型
+├── consumer/                # 消费侧生命周期与健康/告警
+├── producer/                # 生产侧 API（不启动消费协程）
+├── internal/
+│   ├── core/                # 共享类型
+│   ├── driver/              # 驱动接口
+│   ├── provider/redis/      # Redis/Valkey 驱动实现（含 Lua）
+│   ├── queue/               # Event/Delay 消费实现
+│   └── timer/               # Timer 调度实现
+├── manager.go               # Manager（组合 Consumer + Producer）
+├── manager_producer.go      # Manager 发布 API
+├── export.go                # 对外构造函数
 ├── option.go                # WithXxx Option 配置
 ├── registry.go              # 统一注册中心
-├── manager.go               # 生命周期管理（Start / Stop）
-├── export.go                # 对外 API + NewRedisManager 快捷构造
+├── type.go                  # 对外类型导出
 └── taskx_test.go            # 单元测试
 ```
 
@@ -43,19 +35,19 @@ components/taskx/
 
 ### 1. 驱动可替换
 
-核心逻辑只依赖 `driver/` 下的接口，不直接依赖 Redis。`provider/redis/` 是默认实现，后续可在 `provider/` 下新增 `memory/`、`kafka/` 等目录，对现有代码零侵入。
+核心逻辑只依赖 `internal/driver/` 下的接口，不直接依赖 Redis。`internal/provider/redis/` 是默认实现，后续可在 `internal/provider/` 下新增 `memory/`、`kafka/` 等目录，对现有代码零侵入。
 
 ### 2. 三队列模型（pending → processing → dead）
 
-每个 Runner 在 Redis 中有三个 key：
+每个队列实体在 Redis 中有三个 key（Event 使用 group，Delay 使用 runner）：
 
 ```
-taskx:event:{runner_name}:pending      # 待消费
-taskx:event:{runner_name}:processing   # 执行中
-taskx:event:{runner_name}:dead         # 死信
+taskx:event:{group_name}:pending       # Event 待消费
+taskx:event:{group_name}:processing    # Event 执行中
+taskx:event:{group_name}:dead          # Event 死信
 ```
 
-- **pending → processing**：消费者取出消息时通过 `BLMOVE`（Redis 6.2+）原子转移，确保消息不丢
+- **pending → processing**：消费者通过 Lua 脚本原子执行 `RPOP(pending) + ZADD(processing)`，为非阻塞轮询模型
 - **processing → 删除**：执行成功后 Ack
 - **processing → pending**：执行失败但未超重试上限，通过 Lua 脚本原子完成"删旧值 + 入新值"
 - **processing → dead**：超过 `MaxRetry` 进入死信队列；`MaxRetry` 表示额外重试次数，总尝试次数为 `1 + MaxRetry`
@@ -106,7 +98,8 @@ taskx:event:{runner_name}:dead         # 死信
 3. 超时后仍未处理完的消息保留在 processing 中，等待下次启动时的崩溃恢复机制兜底
 4. **TimerTask**：等待正在执行的定时任务完成后才返回
 5. 内部告警队列在停止阶段会 drain 并写日志，剩余告警不会再回调到 `WithAlertFunc`（即记录后丢弃）
-6. 若 `ctx` 到期，`Stop(ctx)` 返回 `ctx.Err()`，调用方可据此决定是否继续等待
+6. 若 `ctx` 到期，`Stop(ctx)` 返回包含超时原因的错误（首个错误优先），调用方可据此决定是否继续等待
+7. 当前生命周期语义为“一次启动一次停止”：`Stop()` 成功完成后实例进入终态，不允许再次 `Start()`
 
 > **关于 DelayQueue 停止时的消息安全**：`fetch` 中 Lua 脚本会原子地将到期消息从 pending 转移到 processing，然后逐条投入 channel。如果 Stop 在 Lua 执行完成后、消息投入 channel 前触发，这部分消息会留在 processing 中而非 channel 中，因此 drain 阶段无法 Nack 回去。这些消息不会丢失，会在下次启动时由崩溃恢复机制兜底。当前设计优先保证停止速度，避免长时间阻塞导致 K8s 等容器编排系统强制杀死 pod。
 >
@@ -118,21 +111,21 @@ taskx:event:{runner_name}:dead         # 死信
 
 ### 5. Valkey / Redis Cluster 兼容
 
-所有 Redis key 使用 `{runner_name}` 作为 HashTag：
+Redis key 使用 HashTag 保证多 key Lua 不跨 slot（Event 用 `{group_name}`，Delay/Timer 用 `{runner_name}`）：
 
 ```
-taskx:event:{order-notify}:pending
-taskx:event:{order-notify}:processing
-taskx:event:{order-notify}:dead
+taskx:event:{_default_}:pending
+taskx:event:{_default_}:processing
+taskx:event:{_default_}:dead
 ```
 
 花括号内的部分用于计算 slot，同一 Runner 的所有 key 落在同一 slot，Lua 脚本操作多 key 时不会跨 slot。
 
-> **最低版本要求**：Redis >= 6.2 / Valkey >= 7.0（需要 `BLMOVE` 命令支持）。启动时会自动检测版本，不满足时返回错误。
+> **兼容性说明**：当前默认 Redis Provider 的 EventQueue 采用 Lua + `RPOP/ZADD`，不依赖 `BLMOVE`。如需版本门槛与自动检测，请在接入层自行校验并扩展 Provider。
 
 ### 6. 多消费者
 
-- **EventQueue**：配置 `ConsumerCount=N`，启动 N 个协程并发 `BLMOVE` 同一个 List，Redis 保证每条消息只被一个消费者取到
+- **EventQueue**：配置 `ConsumerCount=N`，启动 N 个协程并发轮询（Lua: `RPOP+ZADD`），单条消息只会被一个协程取到
 - **DelayQueue**：1 个轮询协程取出到期消息，投入 channel，N 个 worker 协程并发执行
 
 ### 7. 分布式锁
@@ -148,7 +141,7 @@ taskx:event:{order-notify}:dead
 ```
 Producer                           Redis                              Consumer
    │                                 │                                    │
-   │─── PublishEvent ──► LPUSH ────► pending ◄─── BLMOVE ────────────────│
+   │─── PublishEvent ──► LPUSH ────► pending ◄─── Lua(RPOP+ZADD) ───────│
    │                                 │              │                     │
    │                                 │              ▼                     │
    │                                 │          processing ──── Run() ───│
@@ -243,7 +236,7 @@ if env, err := mgr.PublishDelayPayload(ctx, "delay-runner-name", rawPayload, exe
 
 | Option | 默认值 | 说明 |
 |--------|--------|------|
-| `WithKeyPrefix(s)` | `"taskx"` | Redis key 前缀；HashTag 仍只使用 `{runner_name}` |
+| `WithKeyPrefix(s)` | `"taskx"` | Redis key 前缀；Event 使用 `{group_name}`，Delay/Timer 使用 `{runner_name}` |
 | `WithLogger(l)` | 无（必填） | `logger_factory.Logger` 实例 |
 | `WithPollInterval(d)` | `1s` | DelayQueue 轮询间隔 |
 | `WithEventPollInterval(d)` | `3s` | EventQueue 消费者轮询间隔（从 pending 拉取消息的频率） |
@@ -311,9 +304,9 @@ if !mgr.HealthOK() {
 ## Redis Key 命名规范
 
 ```
-{prefix}:event:{runner_name}:pending        # EventQueue 待消费
-{prefix}:event:{runner_name}:processing     # EventQueue 执行中
-{prefix}:event:{runner_name}:dead           # EventQueue 死信
+{prefix}:event:{group_name}:pending         # EventQueue 待消费（按 group）
+{prefix}:event:{group_name}:processing      # EventQueue 执行中（按 group）
+{prefix}:event:{group_name}:dead            # EventQueue 死信（按 group）
 {prefix}:delay:{runner_name}:pending        # DelayQueue 待触发
 {prefix}:delay:{runner_name}:processing     # DelayQueue 执行中
 {prefix}:delay:{runner_name}:dead           # DelayQueue 死信
@@ -323,4 +316,4 @@ if !mgr.HealthOK() {
 {prefix}:lock:recover:delay:{runner_name}   # DelayQueue 恢复锁
 ```
 
-> `{runner_name}` 中的花括号是 Redis HashTag 语法，确保同一 Runner 的所有 key 落在同一 slot，兼容 Valkey / Redis Cluster。
+> 花括号中的内容是 Redis HashTag。Event 同组 key（`{group_name}`）落同一 slot；Delay/Timer 同 runner key（`{runner_name}`）落同一 slot，兼容 Valkey / Redis Cluster。
