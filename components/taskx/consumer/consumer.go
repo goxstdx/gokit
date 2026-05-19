@@ -51,6 +51,7 @@ type Consumer struct {
 	consumers       []QueueConsumer
 	scheduler       TimerScheduler
 	running         bool
+	stopping        bool
 	lifecycleCancel context.CancelFunc
 
 	monitorCancel context.CancelFunc
@@ -93,9 +94,10 @@ func New(registry *Registry, opts ...Option) *Consumer {
 	}
 }
 
-// Config 获取消费者配置
-func (c *Consumer) Config() *Config {
-	return c.cfg
+// Config 返回消费者配置的只读快照。
+// 返回的是值副本，修改不会影响 Consumer 内部状态。
+func (c *Consumer) Config() Config {
+	return *c.cfg
 }
 
 // Registry 获取注册中心
@@ -106,12 +108,12 @@ func (c *Consumer) Registry() *Registry {
 	return c.registry
 }
 
-// SetRegistry 设置注册中心（仅允许在未运行状态下设置）。
+// SetRegistry 设置注册中心（仅允许在未运行且未停止中的状态下设置）。
 func (c *Consumer) SetRegistry(registry *Registry) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.running {
-		return fmt.Errorf("taskx: cannot set registry while consumer is running")
+	if c.running || c.stopping {
+		return fmt.Errorf("taskx: cannot set registry while consumer is running or stopping")
 	}
 	if registry == nil {
 		registry = NewRegistry()
@@ -120,34 +122,34 @@ func (c *Consumer) SetRegistry(registry *Registry) error {
 	return nil
 }
 
-// SetEventConsumerFactory 设置事件队列消费器工厂（仅允许在未运行状态下设置）。
+// SetEventConsumerFactory 设置事件队列消费器工厂（仅允许在空闲状态下设置）。
 func (c *Consumer) SetEventConsumerFactory(f EventConsumerFactory) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.running {
-		return fmt.Errorf("taskx: cannot set event consumer factory while consumer is running")
+	if c.running || c.stopping {
+		return fmt.Errorf("taskx: cannot set event consumer factory while consumer is running or stopping")
 	}
 	c.eventFactory = f
 	return nil
 }
 
-// SetDelayConsumerFactory 设置延迟队列消费器工厂（仅允许在未运行状态下设置）。
+// SetDelayConsumerFactory 设置延迟队列消费器工厂（仅允许在空闲状态下设置）。
 func (c *Consumer) SetDelayConsumerFactory(f DelayConsumerFactory) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.running {
-		return fmt.Errorf("taskx: cannot set delay consumer factory while consumer is running")
+	if c.running || c.stopping {
+		return fmt.Errorf("taskx: cannot set delay consumer factory while consumer is running or stopping")
 	}
 	c.delayFactory = f
 	return nil
 }
 
-// SetTimerSchedulerFactory 设置定时任务调度器工厂（仅允许在未运行状态下设置）。
+// SetTimerSchedulerFactory 设置定时任务调度器工厂（仅允许在空闲状态下设置）。
 func (c *Consumer) SetTimerSchedulerFactory(f TimerSchedulerFactory) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.running {
-		return fmt.Errorf("taskx: cannot set timer scheduler factory while consumer is running")
+	if c.running || c.stopping {
+		return fmt.Errorf("taskx: cannot set timer scheduler factory while consumer is running or stopping")
 	}
 	c.timerFactory = f
 	return nil
@@ -176,6 +178,9 @@ func (c *Consumer) Start(ctx context.Context) error {
 
 	if c.running {
 		return fmt.Errorf("taskx: consumer already running")
+	}
+	if c.stopping {
+		return fmt.Errorf("taskx: consumer is stopping, cannot start until stop completes")
 	}
 	entries, err := c.checkStartReadyLocked(ctx)
 	if err != nil {
@@ -286,6 +291,8 @@ func (c *Consumer) Stop(ctx context.Context) error {
 	if c.cfg.Logger == nil {
 		return fmt.Errorf("taskx: logger is required, use WithLogger() to set")
 	}
+	c.stopping = true
+	defer func() { c.stopping = false }()
 	c.cfg.Logger.Infof("taskx: consumer stopping")
 
 	var firstErr error
@@ -385,14 +392,19 @@ func (c *Consumer) cleanupStartFailureLocked() {
 }
 
 func (c *Consumer) stopConsumersWithContextLocked(ctx context.Context) error {
+	var firstErr error
 	for i, qc := range c.consumers {
 		if err := waitWithContext(ctx, qc.Stop); err != nil {
-			return fmt.Errorf("taskx: stop consumer[%d]: %w", i, err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("taskx: stop consumer[%d]: %w", i, err)
+			}
+			c.cfg.Logger.Errorf("taskx: consumer[%d] stop timeout: %v", i, err)
+			continue
 		}
 		c.cfg.Logger.Infof("taskx: consumer[%d] stopped", i)
 	}
 	c.consumers = nil
-	return nil
+	return firstErr
 }
 
 func (c *Consumer) ensureRegistryLocked() {

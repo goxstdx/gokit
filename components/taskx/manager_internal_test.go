@@ -445,7 +445,9 @@ func TestEventPollIntervalConfigIsPassedToConsumer(t *testing.T) {
 		WithEventQueueDriver(drv),
 		WithEventPollInterval(75*time.Millisecond),
 	)
-	mgr.SetDefaultFactories()
+	if err := mgr.SetDefaultFactories(); err != nil {
+		t.Fatal(err)
+	}
 	if err := mgr.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -476,7 +478,9 @@ func TestDelayRetryBaseIntervalConfigControlsFallbackSchedule(t *testing.T) {
 		WithPollInterval(10*time.Millisecond),
 		WithDelayRetryBaseInterval(2*time.Second),
 	)
-	mgr.SetDefaultFactories()
+	if err := mgr.SetDefaultFactories(); err != nil {
+		t.Fatal(err)
+	}
 	before := time.Now().UnixMicro()
 	if err := mgr.Start(context.Background()); err != nil {
 		t.Fatal(err)

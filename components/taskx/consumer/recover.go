@@ -12,23 +12,21 @@ import (
 
 // RecoverEventDead 从事件队列死信中恢复消息，重置重试计数。
 func (c *Consumer) RecoverEventDead(ctx context.Context, runnerName string, count int64) (int64, error) {
-	cfg := c.Config()
-	if cfg.EventDriver == nil {
+	if c.cfg.EventDriver == nil {
 		return 0, nil
 	}
 	groupName := c.resolveEventGroupName(runnerName)
-	keys := queue.NewQueueKeySet(cfg.KeyPrefix, "event", groupName)
-	return recoverEventDeadWithReset(ctx, cfg.EventDriver, keys.Dead, keys.Pending, count, cfg.Logger, cfg.OnAlert)
+	keys := queue.NewQueueKeySet(c.cfg.KeyPrefix, "event", groupName)
+	return recoverEventDeadWithReset(ctx, c.cfg.EventDriver, keys.Dead, keys.Pending, count, c.cfg.Logger, c.cfg.OnAlert)
 }
 
 // RecoverDelayDead 从延迟队列死信中恢复消息，重置重试计数。
 func (c *Consumer) RecoverDelayDead(ctx context.Context, runnerName string, count int64) (int64, error) {
-	cfg := c.Config()
-	if cfg.DelayDriver == nil {
+	if c.cfg.DelayDriver == nil {
 		return 0, nil
 	}
-	keys := queue.NewQueueKeySet(cfg.KeyPrefix, "delay", runnerName)
-	return recoverDelayDeadWithReset(ctx, cfg.DelayDriver, keys.Dead, keys.Pending, count, cfg.Logger, cfg.OnAlert)
+	keys := queue.NewQueueKeySet(c.cfg.KeyPrefix, "delay", runnerName)
+	return recoverDelayDeadWithReset(ctx, c.cfg.DelayDriver, keys.Dead, keys.Pending, count, c.cfg.Logger, c.cfg.OnAlert)
 }
 
 func recoverEventDeadWithReset(
