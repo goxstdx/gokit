@@ -38,6 +38,15 @@ type DelayConsumerFactory func(
 	cfg queue.DelayConsumerConfig,
 ) QueueConsumer
 
+// ProducerSnapshot 用于构建 Producer 的最小必要配置快照。
+type ProducerSnapshot struct {
+	EventDriver driver.EventQueueDriver
+	DelayDriver driver.DelayQueueDriver
+	KeyPrefix   string
+	Logger      core.Logger
+	OnAlert     core.AlertFunc
+}
+
 // Consumer 任务消费者，管理 EventQueue、DelayQueue、TimerTask 的消费生命周期。
 type Consumer struct {
 	cfg      *Config
@@ -94,10 +103,17 @@ func New(registry *Registry, opts ...Option) *Consumer {
 	}
 }
 
-// Config 返回消费者配置的只读快照。
-// 返回的是值副本，修改不会影响 Consumer 内部状态。
-func (c *Consumer) Config() Config {
-	return *c.cfg
+// ProducerSnapshot 返回构建 Producer 所需的最小配置快照。
+func (c *Consumer) ProducerSnapshot() ProducerSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return ProducerSnapshot{
+		EventDriver: c.cfg.EventDriver,
+		DelayDriver: c.cfg.DelayDriver,
+		KeyPrefix:   c.cfg.KeyPrefix,
+		Logger:      c.cfg.Logger,
+		OnAlert:     c.cfg.OnAlert,
+	}
 }
 
 // Registry 获取注册中心

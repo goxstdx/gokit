@@ -9,7 +9,7 @@ import (
 )
 
 func (m *Manager) buildProducer() *producer.Producer {
-	cfg := m.Consumer.Config()
+	cfg := m.Consumer.ProducerSnapshot()
 	return producer.New(producer.Config{
 		EventDriver:       cfg.EventDriver,
 		DelayDriver:       cfg.DelayDriver,

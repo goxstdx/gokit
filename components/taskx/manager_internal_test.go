@@ -378,12 +378,13 @@ func TestStartFailureCleansUpAndReportsNotRunning(t *testing.T) {
 	}
 
 	var stopped atomic.Int64
+	var alerts atomic.Int64
 	mgr := NewManager(
 		reg,
 		WithLogger(newInternalTestLogger(t)),
 		WithLockDriver(internalLockDriver{}),
 		WithEventQueueDriver(internalEventDriver{}),
-		WithAlertFunc(func(core.AlertData) {}),
+		WithAlertFunc(func(core.AlertData) { alerts.Add(1) }),
 	)
 	var created atomic.Int64
 	mgr.SetEventConsumerFactory(
@@ -401,8 +402,11 @@ func TestStartFailureCleansUpAndReportsNotRunning(t *testing.T) {
 	if mgr.Running() {
 		t.Fatal("manager should not be running after failed start")
 	}
-	if mgr.Config().OnAlert == nil {
-		t.Fatal("expected original alert handler to be restored")
+	if _, err := mgr.NewProducer().PublishEventPayload(context.Background(), "not-registered", "payload"); err == nil {
+		t.Fatal("expected publish to unregistered runner to fail")
+	}
+	if alerts.Load() == 0 {
+		t.Fatal("expected original alert handler to be restored and invoked")
 	}
 	if got := stopped.Load(); got != 1 {
 		t.Fatalf("expected one successfully started consumer to stop, got %d", got)
