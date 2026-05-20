@@ -80,7 +80,7 @@ taskx:event:{group_name}:dead          # Event 死信
 抢分布式锁 → 等待 processingTimeout → 将 processing 残留消息移回 pending → 释放锁 → 退出
 ```
 
-> 前提：只要注册了 EventQueue / DelayQueue runner，`Start()` 就要求必须配置 `LockDriver`；未配置会直接返回错误，不会进入“无锁启动”。
+> 前提：当注册了 EventQueue / DelayQueue runner，且 `RecoveryMode != none` 时，`Start()` 要求必须配置 `LockDriver`；未配置会直接返回错误，不会进入“无锁启动”。如果显式关闭恢复（`WithRecoveryMode(RecoveryModeNone)`），则不会因为队列 runner 本身强制要求恢复锁。
 
 - **等待 processingTimeout**：给活跃的消费者足够时间处理完，降低误恢复正在执行消息的概率
 - **分布式锁**：多机启动时只有一台执行恢复；恢复期间会自动续租，降低长恢复导致锁过期的并发恢复风险
@@ -316,7 +316,7 @@ if !mgr.HealthOK() {
 {prefix}:delay:{runner_name}:dead           # DelayQueue 死信
 {prefix}:lock:timer:{runner_name}           # TimerTask forbid_overlap 锁
 {prefix}:lock:timer:{runner_name}:{slot}    # TimerTask single_per_tick 锁（slot 为 cron tick 时间窗）
-{prefix}:lock:recover:event:{runner_name}   # EventQueue 恢复锁
+{prefix}:lock:recover:event:{group_name}    # EventQueue 恢复锁（按 group）
 {prefix}:lock:recover:delay:{runner_name}   # DelayQueue 恢复锁
 ```
 
