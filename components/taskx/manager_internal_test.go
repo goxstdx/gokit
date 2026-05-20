@@ -197,7 +197,7 @@ func (c *internalConsumer) BuildKey() string { return "" }
 
 func TestNewManagerWithNilRegistryCreatesEmptyRegistry(t *testing.T) {
 	mgr := NewManager(nil, WithLogger(newInternalTestLogger(t)))
-	if mgr.Registry() == nil {
+	if mgr.consumer.Registry() == nil {
 		t.Fatal("expected nil registry to be replaced with an empty registry")
 	}
 }
@@ -205,10 +205,10 @@ func TestNewManagerWithNilRegistryCreatesEmptyRegistry(t *testing.T) {
 func TestNewManagerUsesCtorRegistry(t *testing.T) {
 	reg := NewRegistry()
 	mgr := NewManager(reg)
-	if mgr.Registry() == reg {
+	if mgr.consumer.Registry() == reg {
 		t.Fatal("expected Registry to return a read-only snapshot, not the live registry pointer")
 	}
-	if len(mgr.Registry().GetEventRunners()) != 0 {
+	if len(mgr.consumer.Registry().GetEventRunners()) != 0 {
 		t.Fatal("expected empty registry snapshot")
 	}
 }
@@ -216,16 +216,16 @@ func TestNewManagerUsesCtorRegistry(t *testing.T) {
 func TestSetRegistrySupportsReplaceAndNilReset(t *testing.T) {
 	mgr := NewManager(nil, WithLogger(newInternalTestLogger(t)))
 	reg := NewRegistry()
-	if err := mgr.SetRegistry(reg); err != nil {
+	if err := mgr.consumer.SetRegistry(reg); err != nil {
 		t.Fatalf("set registry: %v", err)
 	}
-	if mgr.Registry() == reg {
+	if mgr.consumer.Registry() == reg {
 		t.Fatal("expected Registry to return a snapshot after replacement")
 	}
-	if err := mgr.SetRegistry(nil); err != nil {
+	if err := mgr.consumer.SetRegistry(nil); err != nil {
 		t.Fatalf("set nil registry: %v", err)
 	}
-	if mgr.Registry() == nil {
+	if mgr.consumer.Registry() == nil {
 		t.Fatal("expected nil registry input to be replaced by empty registry")
 	}
 }
@@ -241,19 +241,27 @@ func TestRegistrySnapshotIsReadOnlyAndRunningRegistryIsFrozen(t *testing.T) {
 		WithLockDriver(internalLockDriver{}),
 		WithEventQueueDriver(internalEventDriver{}),
 	)
-	mgr.SetEventConsumerFactory(func(queue.EventConsumerConfig) QueueConsumer {
-		return &internalConsumer{}
-	})
+	mgr.consumer.SetEventConsumerFactory(
+		func(queue.EventConsumerConfig) QueueConsumer {
+			return &internalConsumer{}
+		},
+	)
 	if err := mgr.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	defer func() { _ = mgr.Stop(context.Background()) }()
 
-	if err := reg.RegisterEventRunner(internalQueueRunner{name: "evt-2"}); err == nil || !strings.Contains(err.Error(), "registry is frozen") {
+	if err := reg.RegisterEventRunner(internalQueueRunner{name: "evt-2"}); err == nil || !strings.Contains(
+		err.Error(),
+		"registry is frozen",
+	) {
 		t.Fatalf("expected frozen registry error, got %v", err)
 	}
-	snapshot := mgr.Registry()
-	if err := snapshot.RegisterEventRunner(internalQueueRunner{name: "snapshot-only"}); err == nil || !strings.Contains(err.Error(), "registry is frozen") {
+	snapshot := mgr.consumer.Registry()
+	if err := snapshot.RegisterEventRunner(internalQueueRunner{name: "snapshot-only"}); err == nil || !strings.Contains(
+		err.Error(),
+		"registry is frozen",
+	) {
 		t.Fatalf("expected snapshot to be read-only, got %v", err)
 	}
 }
@@ -269,7 +277,7 @@ func TestSetRegistryFailsWhileRunning(t *testing.T) {
 		WithLockDriver(internalLockDriver{}),
 		WithEventQueueDriver(internalEventDriver{}),
 	)
-	mgr.SetEventConsumerFactory(
+	mgr.consumer.SetEventConsumerFactory(
 		func(queue.EventConsumerConfig) QueueConsumer {
 			return &internalConsumer{}
 		},
@@ -279,7 +287,7 @@ func TestSetRegistryFailsWhileRunning(t *testing.T) {
 	}
 	defer func() { _ = mgr.Stop(context.Background()) }()
 
-	if err := mgr.SetRegistry(NewRegistry()); err == nil || !strings.Contains(
+	if err := mgr.consumer.SetRegistry(NewRegistry()); err == nil || !strings.Contains(
 		err.Error(),
 		"cannot set registry while consumer is running",
 	) {
@@ -289,7 +297,7 @@ func TestSetRegistryFailsWhileRunning(t *testing.T) {
 
 func TestEmptyRegistryFailsCheckStartReadyAndStart(t *testing.T) {
 	mgr := NewManager(nil, WithLogger(newInternalTestLogger(t)))
-	if mgr.Registry() == nil {
+	if mgr.consumer.Registry() == nil {
 		t.Fatal("expected nil registry to be replaced with an empty registry")
 	}
 	if err := mgr.CheckStartReady(context.Background()); err == nil || !strings.Contains(
@@ -324,7 +332,7 @@ func TestRestartAfterStopReturnsError(t *testing.T) {
 		WithLockDriver(internalLockDriver{}),
 		WithEventQueueDriver(internalEventDriver{}),
 	)
-	if err := mgr.SetDefaultFactories(); err != nil {
+	if err := mgr.consumer.SetDefaultFactories(); err != nil {
 		t.Fatal(err)
 	}
 	if err := mgr.Start(context.Background()); err != nil {
@@ -443,7 +451,7 @@ func TestStartFailureCleansUpAndReportsNotRunning(t *testing.T) {
 		WithAlertFunc(func(core.AlertData) { alerts.Add(1) }),
 	)
 	var created atomic.Int64
-	mgr.SetEventConsumerFactory(
+	mgr.consumer.SetEventConsumerFactory(
 		func(queue.EventConsumerConfig) QueueConsumer {
 			if created.Add(1) == 2 {
 				return &internalConsumer{startErr: errors.New("boom"), stopped: &stopped}
@@ -505,7 +513,7 @@ func TestEventPollIntervalConfigIsPassedToConsumer(t *testing.T) {
 		WithEventQueueDriver(drv),
 		WithEventPollInterval(75*time.Millisecond),
 	)
-	if err := mgr.SetDefaultFactories(); err != nil {
+	if err := mgr.consumer.SetDefaultFactories(); err != nil {
 		t.Fatal(err)
 	}
 	if err := mgr.Start(context.Background()); err != nil {
@@ -538,7 +546,7 @@ func TestDelayRetryBaseIntervalConfigControlsFallbackSchedule(t *testing.T) {
 		WithPollInterval(10*time.Millisecond),
 		WithDelayRetryBaseInterval(2*time.Second),
 	)
-	if err := mgr.SetDefaultFactories(); err != nil {
+	if err := mgr.consumer.SetDefaultFactories(); err != nil {
 		t.Fatal(err)
 	}
 	before := time.Now().UnixMicro()
@@ -572,7 +580,7 @@ func TestResolveEventGroupNameStrictReturnsFalseForUnregistered(t *testing.T) {
 	}
 
 	mgr := NewManager(reg, WithLogger(newInternalTestLogger(t)))
-	resolver := mgr.EventGroupResolver()
+	resolver := mgr.consumer.EventGroupResolver()
 
 	group, ok := resolver("registered-evt")
 	if !ok {
@@ -603,7 +611,7 @@ func TestExecuteTimerTaskOnceUsesFixedLockAndRequestPayload(t *testing.T) {
 		WithKeyPrefix("custom-prefix"),
 	)
 
-	result, err := mgr.ExecuteTimerTaskOnce(
+	result, err := mgr.consumer.ExecuteTimerTaskOnce(
 		context.Background(),
 		core.TimerExecuteRequest{Name: "manual-exec", Payload: "manual-param"},
 	)

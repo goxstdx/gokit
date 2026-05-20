@@ -9,15 +9,15 @@ import (
 )
 
 func (m *Manager) buildProducer() *producer.Producer {
-	cfg := m.Consumer.ProducerSnapshot()
+	cfg := m.consumer.ProducerSnapshot()
 	return producer.New(producer.Config{
 		EventDriver:       cfg.EventDriver,
 		DelayDriver:       cfg.DelayDriver,
 		KeyPrefix:         cfg.KeyPrefix,
 		Logger:            cfg.Logger,
 		OnAlert:           cfg.OnAlert,
-		ResolveEventGroup: m.Consumer.EventGroupResolver(),
-		IsDelayRegistered: m.Consumer.DelayRegisteredChecker(),
+		ResolveEventGroup: m.consumer.EventGroupResolver(),
+		IsDelayRegistered: m.consumer.DelayRegisteredChecker(),
 	})
 }
 

@@ -62,6 +62,7 @@ type QueueConsumer = consumer.QueueConsumer
 type EventConsumerFactory = consumer.EventConsumerFactory
 type DelayConsumerFactory = consumer.DelayConsumerFactory
 type TimerSchedulerFactory = consumer.TimerSchedulerFactory
+type ManagerHealthSnapshot = core.HealthSnapshot
 
 var NewEnvelope = core.NewEnvelope
 var DecodeEnvelope = core.DecodeEnvelope
