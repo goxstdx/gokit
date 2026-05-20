@@ -257,7 +257,7 @@ func toZapFields(fields []Field) []zap.Field {
 	return zf
 }
 
-func toZapFieldsMap(fields map[string]any) []zap.Field {
+func toZapFieldsMap(fields MapFields) []zap.Field {
 	zf := make([]zap.Field, 0, len(fields))
 	for k, v := range fields {
 		zf = append(zf, zap.Any(k, v))
